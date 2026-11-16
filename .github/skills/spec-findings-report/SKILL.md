@@ -1,0 +1,297 @@
+---
+name: spec-findings-report
+description: Format, severity, naming and self-check for the spec.md issues report (reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md), including the finding block an author can act on without asking a question back.
+---
+
+# The spec issues report
+
+The report is read by an author under time pressure, next to the specification, often without the
+reviewer present. Every finding must be understandable, actionable and paste-ready on its own.
+
+## Location and name
+
+The iteration is a property of the **file**, not of the report. `spec.md` at the workspace root is the
+submission; every reviewed version is archived next to it as `spec-YYYY-MM-DD-<n>.md`; the report for
+iteration `<n>` is `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md`.
+
+```
+spec.md                                             the submission
+spec-2026-11-16-1.md                                archive of iteration 1  (what was reviewed)
+spec-2026-11-16-2.md                                archive of iteration 2
+reviews/spec-2026-11-16.issues-Iteration_2.md       the report for iteration 2
+```
+
+- Directory: `reviews/` at the workspace root. Create it with `mkdir -p reviews` if missing.
+- Name: `spec-YYYY-MM-DD.issues-Iteration_<n>.md` - a dot before `issues`, capital `I`, underscore
+  before the number.
+  - `YYYY-MM-DD` comes from `date +%F` executed in the terminal. Never write a date from memory.
+  - `<n>` is the `iteration` the resolver returned (see below), and it must equal the report's own
+    `**Iteration:**` line.
+- Never overwrite, never rename, never delete a previous report. The chain of iterations is the audit
+  trail of how the specification improved.
+
+### Resolve the iteration (step 0 of the agent, never guessed)
+
+```bash
+mkdir -p reviews
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)"
+# a forced re-review of an unchanged file: same command, one flag
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)" --force
+```
+
+The script looks for `spec.md`, finds the highest archived iteration, compares content (trailing
+whitespace excluded) and prints JSON. Three states:
+
+| `state` | `review` | What happened | What you write |
+| --- | --- | --- | --- |
+| `NEW` | `true` | `spec.md` differed and was renamed to `spec-YYYY-MM-DD-<n>.md` | the full report for `Iteration_<n>`, at `report` |
+| `UNCHANGED` | `false` | `spec.md` is identical to the last archive | the short FAIL report at `report`: Blocking, nothing changed since iteration `<last_iteration>` |
+| `MISSING` | `false` | no `spec.md`, or an empty one | the short FAIL report at `report`: Blocking, no `spec.md` |
+
+Read `report` from the JSON and write there - never compose the path yourself. `<n>` is one more than
+every iteration the workspace already shows, counting both archives (`spec-*.md`) and reports
+(`reviews/spec-*.issues-Iteration_*.md`, plus the older `reviews/spec-YYYY-MM-DD-N.issues.md`):
+
+- a report is a deliverable, so an existing report is **never** overwritten, even when the resolver is
+  pointed at the wrong directory or a run has to be repeated;
+- in a `NEW` run the archived file and the report carry the same `<n>`, so `spec-YYYY-MM-DD-<n>.md` and
+  `issues-Iteration_<n>` always name the same iteration.
+
+Never create, restore or reconstruct `spec.md`; if it is missing, that is the author's action, reported
+as Blocking. Never renumber an existing archive or report to make room.
+
+### Forced re-review (`--force`)
+
+`--force` exists for one case: the user asks for the current `spec.md` to be reviewed again even though
+it did not change. It is a human decision, never a default - a second review of identical text produces
+an identical report, so the flag buys a fresh report on purpose (a re-read after the checklist changed, a
+second reviewer, a documented re-confirmation), not progress, and never a way to turn a `FAIL` into a
+`PASS`.
+
+| | Normal run | `--force` run |
+| --- | --- | --- |
+| identical content | `UNCHANGED`, `review: false`, short FAIL report | `NEW`, `review: true`, `forced: true`, full report |
+| the file | stays as `spec.md` | archived as `spec-YYYY-MM-DD-<n>.md`, same as any new submission |
+| the number | `1 + max` of archives and reports | identical rule: the forced run never reuses a number |
+| the report | `State: NEW` (new content) | `State: NEW` plus `**Forced:** yes - <reason>` |
+| missing or empty file | `MISSING`, Blocking | `MISSING` still: `--force` cannot review a file that is not there |
+
+Everything after step 0 is unchanged: the forced run is a full review of the archive the resolver
+produced, checked by the same verifier. Never mark a report forced unless the JSON said `forced: true`.
+
+### The short report (a run that is not a review)
+
+For `MISSING` and `UNCHANGED` the report keeps the same name and header, and contains exactly:
+
+1. the header block with `Iteration: <n>` from the resolver, `State: MISSING` or `State: UNCHANGED`,
+   `Source:` the last archive it was compared against (or `none` when nothing is archived);
+2. `**Verdict:** FAIL - 1 Blocking / 0 Important / 0 Minor`;
+3. one finding `SPEC-01` with severity `Blocking`, block `SP00 input`, location of the missing or stale
+   artifact (`spec.md`, workspace root), the resolver's `reason` as what the document says, why it
+   blocks QA, and what the author must do (submit a changed `spec.md`, or the same file if the last
+   iteration is stale);
+4. the three ready-to-paste options of a Blocking finding, e.g. `submit a modified spec.md`,
+   `keep the specification frozen and stop the chain`, `withdraw the request and record the gate as
+   blocked` - each with its consequence - plus the `**If nobody decides**` line: no implementation and
+   no test design starts from a spec nobody reviewed;
+5. nothing else: no block coverage, no assertion inventory, no traceability, and no delta against a
+   file nobody reviewed. A short `What this run did` table (resolver state, archive written or not,
+   what was skipped) is allowed as evidence; it is not analysis.
+
+Write `State: N/A` (and no short report) only when the state was `NEW`. A forced run never ends in a
+short report: `--force` turns an `UNCHANGED` file into a `NEW` one, and a `MISSING` one stays `MISSING`.
+
+## Report types
+
+- **`full`** - the default: reads as a self-contained document, every open finding in the current run.
+- **`delta`** - only when re-reviewing a document already reviewed in an earlier iteration *of the same
+  day* and the author asked for changes only. It must say `Report type: delta` in the header, list
+  `closed` / `still open` / `new` counts, and carry the full block for every new finding plus the
+  previously-written text for the closed ones. A delta report is never the author's working list; point
+  to the last full report.
+
+## Structure (in this order)
+
+1. **Header** - source path, its header line (ID, version, status, approver, source intent), report
+   type, date, reviewer, `Iteration: <n>` and `State: NEW` (from the resolver), `Forced: no` (or
+   `Forced: yes - <reason>` when it ran with `--force` and the JSON said `forced: true`), what the
+   document is about in one line.
+2. **Verdict** - `FAIL` / `CONDITIONAL` / `PASS` + one sentence + the three counts.
+3. **Score** - findings by severity; acceptance criteria probed / fully testable / blocked; blocks
+   `PASS`/`FAIL`/`N/A`; references `verified present` / `unverified`; traceability covered / lost.
+4. **Block coverage** - `SP01..SP14` table with verdict + evidence + finding ids.
+5. **Findings** - `SPEC-01..` in **requirement order**: a criterion finding follows the requirement it
+   tests, so the author closes the requirement and its criteria in one place. Each in the block below.
+6. **Assertion inventory** - one row per assertable statement (`AC` | assertion | verdict | TC id |
+   what is missing to make it a test), plus the counts `n of m testable` and a short table of the
+   criteria that cannot become tests as written, with the findings that block each.
+7. **Traceability summary** - one line per FR: intent requirement, ACs, TCs, data/stub/clock needed,
+   state. Full matrix goes to `reviews/<spec-name>-traceability.md`. When the document contradicts
+   itself, add a **contradictions table** (`subject | sentence A | sentence B`) - it is the fastest way
+   for an author to see that the document disagrees with itself rather than with QA.
+8. **What this review could not verify** - `reference | present in workspace | what to ask for`.
+   Everything absent is *unverified*, never "nonexistent".
+9. **Minimum set to reach PASS** - the shortest list of additions that would flip the verdict, numbered,
+   each pointing to the findings it closes. This is the section the author reads first.
+10. **Delta versus iteration N-1** - `closed` / `still open` / `new`, by id. When `<n>=1`:
+    `N/A - this is the first review of this specification.`
+
+## Severity
+
+- **Blocking** - two competent implementations observably differ; two sections contradict each other;
+  a rule that decides correctness of the primary flow is absent (idempotency, error semantics, state
+  definitions, money rules); an acceptance condition cannot be observed anywhere and has no other
+  testable statement; a stated security/data rule is violated by another requirement.
+- **Important** - the feature can be built, but a condition, value, negative case or state is missing
+  that will produce a defect, a manual test, or a rewritten test later; an AC is untestable while its
+  FR states the behavior.
+- **Minor** - a reader must guess and no reasonable implementation differs observably; missing summary
+  metadata; wording that contradicts a decision without affecting a test. Style is never a finding.
+
+## Registry first
+
+Keep a table `ID | severity | block | location | title` in a scratch file and append a row the moment a
+finding is written. The verdict counts, the score table and the block coverage table are **generated from
+that registry**, never authored before the findings and never recounted by eye.
+
+Why this is a rule and not a preference: when the block table is written first, the IDs it promises stop
+matching the findings that get written, and every prose cross-reference (`see SPEC-27`) survives the
+renumbering as a lie. The reader then follows a pointer to a finding about something else, which is worse
+than no pointer. Renumber freely while writing - then regenerate every table and re-check every reference.
+
+## The finding block
+
+Every finding uses this exact shape. Nothing optional except where marked.
+
+````markdown
+### SPEC-07 - Retry schedule undefined; the count of attempts is arithmetically impossible
+**Severity:** Blocking · **Block:** SP09 · **Location:** §6 (l.71-78), §11 AC-03
+
+**What the document says**
+> "retried automatically up to 3 times with backoff until payment succeeds or the subscription is suspended" (§6)
+> "attempt_no" starts at 1 and increments per attempt (§4.1)
+> "suspended after the initial attempt plus 3 retries" (§6)
+
+**Context** - the free plan charges once per period; `charge_attempts` records every try; AC-03 says a
+subscription is suspended after the retries are exhausted. The document names three different totals for
+the same sequence - 3 retries, 4 attempts being possible, and a suspension after "initial + 3".
+
+**In one sentence** - the number of attempts before suspension is stated three incompatible ways, and no
+time interval, origin or catch-up rule is given for any of them.
+
+**Why QA cannot proceed** - an assertion needs one number and one schedule. Today "suspended on attempt
+3", "attempt 4" and "attempt 5" all satisfy AC-03, so a passing test proves nothing about the retry policy.
+
+**If it ships** - a customer is suspended one attempt early or one late; the off-by-one is invisible until
+a real card declines twice; no test can be written for a missed run.
+
+**Surviving mutation** - retry after 1 minute, then 10 minutes, then 2 hours, forever, without ever
+suspending: every acceptance criterion still passes.
+
+**Suggested completion - pick one:**
+
+- **A. Fixed total of four attempts**
+  `Each period produces at most 4 attempts: the scheduled attempt plus 3 retries, at +1 day, +3 days and
+  +5 days after the period start. After the 4th declined attempt the subscription is suspended.`
+  Consequence: readable, testable with a fixed clock; requires storing `next_attempt_at`.
+- **B. Fixed schedule inside the month**
+  `Attempts occur on days 1, 3, 5 and 7 of the period; suspension on day 7 at 23:59 in the billing zone.`
+  Consequence: simplest to assert; no room to recover before month end on short periods.
+- **C. Exponential backoff with an explicit cap**
+  `Attempts at +6 h, +18 h, +42 h; suspension 48 h after the last attempt.`
+  Consequence: realistic; every test needs clock control, and the "3 retries" sentence must be deleted.
+
+**Values to fill**
+
+| Field | Suggested | Why |
+|---|---|---|
+| Attempts per period | 4 (1 + 3) | matches "up to 3 times" read once, and removes AC-03 ambiguity |
+| Retry offsets | `+1d, +3d, +5d` from period start | keeps all retries inside a 30-day period |
+| Suspension trigger | after the 4th declined attempt | one number, one terminal state |
+| Missed run recovery | run on the next startup, at most 1 catch-up | otherwise an outage skips the period silently |
+| Time zone for the schedule | `America/Argentina/Buenos_Aires` | must equal the billing zone used in §4.2 |
+
+**Acceptance criteria to add (paste-ready)**
+
+```gherkin
+AC-SPEC-07-1: Given a subscription active whose period started today
+              When the scheduled attempt is declined with card_declined
+              Then charge_attempts has attempt_no=1 and next_attempt_at = period_start + 1 day
+               And the subscription is still active
+AC-SPEC-07-2: Given a subscription with 3 declined attempts in the current period
+              When the 4th attempt is declined
+              Then the subscription status is suspended, no further attempts are scheduled for the period
+               And exactly 4 rows exist in charge_attempts for this period
+```
+
+**If nobody decides** - default to option A: it satisfies every existing sentence with the fewest
+changes, and it is the only option where a 30-day period always contains the whole retry sequence.
+Record it in §12 as an assumption with the owner below.
+
+**Question to the author**
+1. Is the total 3 or 4 attempts, and does the count reset every period?
+2. What should happen if the job does not run (outage, deploy) on a scheduled day - catch up, skip, or
+   mark the period failed?
+
+**Close by:** Billing Product (product owner) / before the implementation kickoff, 2026-11-23
+````
+
+### Rules for the block
+
+- The title states the defect, not the topic: "Retry schedule undefined; the count of attempts is
+  arithmetically impossible", not "Retries".
+- At least two options, always. One option is a decision you took on the author's behalf; three is
+  usually one too many. Each option carries its consequence in one line.
+- Options must be **paste-ready**: full sentences in the document's language of record, no `<...>`
+  placeholders except where a value is offered in the table underneath.
+- The `Values to fill` table is where the suggested values live: field, suggested value, one-line
+  justification. It is what makes the finding cheap to close.
+- The AC block is `gherkin` and must include the value that distinguishes correct from incorrect, and
+  the negative or boundary case when the finding is about one.
+- If the author cannot decide, the default must be a real default with a stated consequence, never "TBD".
+- Questions are numbered and answerable. No question that the document already answers.
+- `Minor` findings keep the same shape but may collapse `Context` and `If it ships` into one line.
+
+## Mechanical self-check before you claim the report exists
+
+Run the verifier. It is shipped with this skill and it checks the things a human read does not:
+
+```bash
+python3 .github/skills/spec-findings-report/scripts/verify-report.py \
+    reviews/spec-$(date +%F).issues-Iteration_<n>.md spec-$(date +%F)-<n>.md --intent intent.md
+```
+
+It fails on:
+
+| Check | What it catches |
+|---|---|
+| quote integrity | a quoted sentence that is not literally in the source - a paraphrase dressed as a quote, or a quote kept after the document changed |
+| dangling reference | a `see SPEC-nn` left behind by a renumbering, pointing at nothing |
+| contiguity | a gap or a duplicate in the finding ids |
+| required blocks | a finding without context, without a question, or without a close-by date |
+| options | a Blocking finding with fewer than three ready-to-paste options |
+| declared counts | a verdict that says 16/12/1 while the findings are 15/12/1 |
+| defaults | a Blocking finding with no `**If nobody decides**` |
+| tables | a row whose pipe count differs from the row above it - the rendered table is broken |
+| assertion inventory | the row count does not match the claimed number of assertions |
+
+It cannot check whether the run was forced: that one fact comes from the resolver JSON, and a report
+that says `**Forced:** yes` without `forced: true` in that JSON is a false statement about the run.
+
+Exit code 0 is the only acceptable result. When it fails on a count, fix the table or write the missing
+finding - **never** the count. A report that claims 9 Blocking and contains 8 is worse than a report with
+8, because the author plans against the number.
+
+**Quote discipline, because this is the check that fails most often.** Read the sentence in the file, then
+copy it. Do not retype it from memory, do not reformat an entity block into `name (col, col, col)`, and do
+not join two bullets with `...`: quote the column list as it stands, one quote per bullet. A quote that the
+author cannot find in their own document costs the whole report its credibility, and it hides the real
+finding behind an argument about phrasing. Partial quotes are fine when they end in `...`; quotes with
+invented words or invented bullets are not quotes.
+
+The verifier is format-tolerant: it also validates the intent report (`INT-nn`), so one command checks both
+kits.
+## Tone
+
+Direct, specific, no hedging, no praise, no "consider", no emoji. The author should be able to close
+every `Blocking` without another conversation - only with decisions and a pen.

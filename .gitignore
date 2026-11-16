@@ -1,0 +1,17 @@
+# 1. Review output - every report and archive under reviews/ is generated per run.
+reviews/
+
+# 2. Working intent files at the root. The intent agent renames the live document to
+#    intent-YYYY-MM-DD-<n>.md on each new iteration, so both the live file and its
+#    archives are noise in history. Only the fixture is source and must stay tracked.
+/intent*.md
+!/intent_example.md
+
+# 3. Same for the spec chain: spec.md and spec-YYYY-MM-DD-<n>.md are working copies.
+/spec*.md
+!/spec_example.md
+
+# Runtime and macOS noise - a 13 MB .venv and TCC metadata are not part of the kit.
+.venv/
+__pycache__/
+.DS_Store

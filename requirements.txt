@@ -1,0 +1,35 @@
+# requirements.txt - intent.md and spec.md QA review kit
+#
+# The three Python scripts in this project import the standard library only:
+#
+#   .github/skills/intent-findings-report/scripts/intent-iteration.py
+#       argparse, datetime, json, os, pathlib, re, sys
+#   .github/skills/intent-findings-report/scripts/selftest-iteration.py
+#       json, pathlib, subprocess, sys, tempfile
+#   .github/skills/spec-findings-report/scripts/verify-report.py
+#       pathlib, re, sys
+#
+# So there is nothing to install: this file is deliberately empty of third-party packages, and
+# `pip install -r requirements.txt` is a no-op that succeeds. That is on purpose - the agents run these
+# scripts inside a repository checkout, where a missing dependency means a review cannot be verified.
+#
+# Runtime: CPython 3.9 or newer, no virtualenv needed.
+#   python3 --version
+#
+# Reproduce the verification of the whole kit (no install required):
+#   python3 .github/skills/intent-findings-report/scripts/selftest-iteration.py
+#   python3 .github/skills/spec-findings-report/scripts/verify-report.py \
+#       reviews/intent-2026-11-16.findings-Iteration_1.md intent-2026-11-16-1.md
+#   python3 .github/skills/spec-findings-report/scripts/verify-report.py \
+#       reviews/spec-2026-11-16.issues-Iteration_1.md spec-2026-11-16-1.md --intent intent_example.md
+#
+# Nothing below is required. Uncomment only if you decide to lint or test the scripts themselves.
+
+# --- optional: static checks on the scripts ---------------------------------
+# ruff==0.6.9
+#
+# --- optional: unit tests around the scripts ---------------------------------
+# pytest==8.3.3
+#
+# --- optional: type checking ------------------------------------------------
+# mypy==1.11.2

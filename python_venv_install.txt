@@ -1,0 +1,201 @@
+python_venv_install.txt
+Kit de QA: intent.md -> spec.md (VS Code + GitHub Copilot)
+Proyecto: /Volumes/2TB_EXT/OffLine/Code/intent.md_and_spec.md_qa_review
+Fecha: 2026-11-16
+
+
+====================================================================
+1. VERSION DE PYTHON NECESARIA
+====================================================================
+
+Minima:  CPython 3.9
+Probada: 3.9.6  (/usr/bin/python3, el que trae macOS)
+Probada: 3.14.7 (/opt/homebrew/bin/python3.14, la que usa el .venv de este proyecto)
+
+Los tres scripts del kit importan solo biblioteca estandar, por eso el rango es amplio.
+No usan ninguna caracteristica posterior a 3.9.
+
+    .github/skills/intent-findings-report/scripts/intent-iteration.py
+    .github/skills/intent-findings-report/scripts/selftest-iteration.py
+    .github/skills/spec-findings-report/scripts/verify-report.py
+
+Paquete o app necesaria para crear el .venv
+-------------------------------------------
+Ninguna adicional. El modulo `venv` viene incluido en CPython desde 3.3, asi que:
+
+    python3 -m venv .venv
+
+alcanza. NO hace falta instalar `virtualenv` ni `pipenv` ni `poetry` ni `conda`.
+
+Si no hubiera un Python 3.9+ en el equipo, la via mas corta en macOS es Homebrew:
+
+    brew install python@3.14
+    /opt/homebrew/bin/python3.14 -V      # verificar: 3.14.7
+
+Paquetes de Python a instalar dentro del .venv
+----------------------------------------------
+Ninguno. `requirements.txt` esta vacio de dependencias de terceros a proposito:
+
+    .venv/bin/python -m pip install -r requirements.txt    # no-op, exit 0
+
+Lo unico que queda instalado dentro del .venv es el propio `pip` (26.2.1 al crear este entorno).
+
+
+====================================================================
+2. EXTENSIONES DE VS CODE NECESARIAS
+====================================================================
+
+Obligatorias
+------------
+  ms-python.python
+      Es la que detecta el .venv, registra el interprete del workspace y activa el entorno
+      en cada terminal nueva. Sin ella, `python.defaultInterpreterPath` de .vscode no hace nada.
+
+  ms-python.vscode-pylance
+      Lenguaje server (autocompletado, salto a definicion, errores al escribir). Viene con la
+      extension de Python en instalaciones nuevas; si falta, se instala aparte.
+
+  github.copilot-chat
+      Es la que lee los agentes personalizados de `.github/agents/*.agent.md` y muestra el
+      selector de agentes en el chat. Sin esta extension, `intent_md_reviewer` y
+      `spec_md_reviewer` no aparecen en el dropdown y el kit no se puede ejecutar desde VS Code.
+
+Recomendadas / opcionales
+-------------------------
+  ms-python.debugpy
+      Solo si vas a depurar los .py del kit con puntos de interrupcion. No es necesaria para
+      correr el flujo normal (los scripts se lanzan desde el agente o desde la terminal).
+
+  github.copilot
+      El motor de Copilot. La app de VS Code suele gestionarlo sola; si el chat pide suscripcion
+      o no responde, revisar aqui.
+
+  rooveterinaryinc.roo-cline
+      Alternativa para orquestar agentes desde VS Code. No es parte del kit.
+
+Instalacion (por si hace falta)
+-------------------------------
+  code --install-extension ms-python.python
+  code --install-extension ms-python.vscode-pylance
+  code --install-extension ms-python.debugpy
+  code --install-extension github.copilot-chat
+
+Comprobar que estan:
+  code --list-extensions | grep -E "python|pylance|debugpy|copilot"
+
+
+====================================================================
+3. CREACION DEL .VENV
+====================================================================
+
+Ya creado en la raiz del proyecto:  .venv/
+
+    cd /Volumes/2TB_EXT/OffLine/Code/intent.md_and_spec.md_qa_review
+    /opt/homebrew/bin/python3.14 -m venv .venv
+    .venv/bin/python -V
+    Python 3.14.7
+
+Reconstruirlo desde cero (si se corrompe o si cambias de version de Python):
+
+    cd /Volumes/2TB_EXT/OffLine/Code/intent.md_and_spec.md_qa_review
+    rm -rf .venv
+    /opt/homebrew/bin/python3.14 -m venv .venv
+    .venv/bin/python -m pip install -r requirements.txt    # no-op, exit 0
+    .venv/bin/python .github/skills/intent-findings-report/scripts/selftest-iteration.py
+
+La ultima linea debe terminar en `all checks passed` (exit 0).
+
+Verificar el kit completo con el interprete del .venv:
+
+    .venv/bin/python .github/skills/intent-findings-report/scripts/selftest-iteration.py
+    .venv/bin/python .github/skills/spec-findings-report/scripts/verify-report.py \
+        reviews/intent-2026-11-16.findings-Iteration_1.md intent-2026-11-16-1.md
+    .venv/bin/python .github/skills/spec-findings-report/scripts/verify-report.py \
+        reviews/spec-2026-11-16.issues-Iteration_1.md spec-2026-11-16-1.md --intent intent_example.md
+
+Resultados esperados (verificados el 2026-11-16 con este .venv):
+
+    all checks passed
+    29 findings (10/15/4), 0 assertion rows, 0 failures
+    29 findings (16/12/1), 22 assertion rows, 0 failures
+
+El .venv ocupa 13 MB. Vive en la raiz porque es donde VS Code lo busca y donde lo esperan los
+comandos de arriba. No moverlo ni renombrarlo.
+
+Nota sobre el volumen: el proyecto esta en /Volumes/2TB_EXT (APFS), asi que el .venv puede usar
+symlinks sin problema. En un volumen exFAT o FAT32 `python3 -m venv` fallaria: en ese caso clonar
+el proyecto a un volumen APFS antes de crear el entorno.
+
+
+====================================================================
+4. PREGUNTA: ¿SE PUEDE CARGAR EL .VENV AUTOMATICAMENTE DESDE .vscode?
+====================================================================
+
+Si, y ya esta creado:  .vscode/settings.json
+
+VS Code detecta un `.venv` en la raiz del workspace por convencion, pero eso solo aplica cuando
+no hay ningun interprete guardado para ese workspace y no activa la terminal de forma garantizada.
+Con `.vscode/settings.json` queda fijado por configuracion del proyecto y viaja con el repo.
+
+Contenido y por que de cada clave:
+
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+        Interprete por defecto del workspace. Se usa al abrir el proyecto y en "Run Python File".
+
+    "python.terminal.activateEnvironment": true
+        Cada terminal nueva del workspace se abre con `(.venv)` activo. Esto es lo que se pide:
+        no hay que escribir `source .venv/bin/activate` nunca mas.
+
+    "python.terminal.activateEnvInCurrentTerminal": true
+        Aplica el mismo criterio a la terminal que ya esta abierta al recargar la ventana.
+
+    "python.venvPath": "${workspaceFolder}"  /  "python.venvFolders": [".venv"]
+        Le dice al buscador de entornos donde mirar, para que el entorno aparezca listado en
+        "Python: Select Interpreter" como ".venv (3.14.7)" y no como ruta suelta.
+
+    "python.testing.pytestEnabled": false / "unittestEnabled": false
+        El kit se verifica con sus propios scripts, no con un runner: sin esto, VS Code ofrece
+        descubrir tests que no existen.
+
+    "files.trimTrailingWhitespace": false  /  "[markdown]": { ... }
+        Intentional: `intent-iteration.py` compara el intent con el ultimo archivo ignorando
+        espacios finales, pero un guardado que recorta el archivo completo puede mover contenido
+        sin que el autor lo note. Se deja el archivo como lo escribio el autor.
+
+    "search.exclude" / "files.watcherExclude" sobre **/.venv
+        El .venv tiene ~13 MB y miles de archivos: no debe aparecer en busquedas ni despertar
+        al watcher cada vez que se guarda un informe.
+
+Como comprobar que quedo cargado
+--------------------------------
+1. Abrir la carpeta del proyecto en VS Code (no un archivo suelto: el workspace root importa).
+2. Ctrl+Shift+P -> "Python: Select Interpreter" -> debe mostrar `.venv` en la lista y marcado.
+3. Abrir una terminal nueva (Ctrl+ñ / Ctrl+`) -> el prompt debe empezar con `(.venv)`.
+4. Dentro de esa terminal:
+
+       python -c "import sys; print(sys.prefix)"
+       /Volumes/2TB_EXT/OffLine/Code/intent.md_and_spec.md_qa_review/.venv
+
+5. Ctrl+Shift+P -> "Developer: Reload Window" si el punto 2 o 3 no se cumple (VS Code cachea el
+   interprete del workspace; recargar la ventana relee .vscode/settings.json).
+
+Si aun asi no carga
+-------------------
+- "Python: Select Interpreter" -> "Enter interpreter path..." -> pegar
+  /Volumes/2TB_EXT/OffLine/Code/intent.md_and_spec.md_qa_review/.venv/bin/python
+- Confirmar que la extension `ms-python.python` esta habilitada en este workspace y no solo
+  instalada (Extensions -> Python -> Enable en el workspace).
+- Revisar que no exista otro `.vscode/settings.json` en una carpeta padre que gane por herencia.
+- El .venv no se versiona: si el proyecto se clona en otra maquina, repetir la seccion 3.
+
+
+====================================================================
+RESUMEN EN 5 LINEAS
+====================================================================
+
+Python 3.9+ (el .venv usa 3.14.7 de Homebrew); el modulo `venv` ya viene incluido, no hay
+paquetes extra que instalar y requirements.txt no trae dependencias.
+Extensiones: ms-python.python, ms-python.vscode-pylance, github.copilot-chat (esta ultima es la
+que muestra los agentes del kit); debugpy solo si vas a depurar.
+.venv ya creado en la raiz con `python3.14 -m venv .venv` y verificado: selftest exit 0.
+.vscode/settings.json ya creado: fija ese interprete y activa `(.venv)` en cada terminal nueva.
