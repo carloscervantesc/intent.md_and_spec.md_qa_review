@@ -51,6 +51,7 @@ python_venv_install.txt                  Python version, VS Code extensions, .ve
 .vscode/settings.json                    pins .venv/bin/python and activates it in new terminals
 intent_example.md  /  spec_example.md    seeded fixtures used to verify the agents
 RUBRIC_*.md                              evaluator's answer keys (never shown to an agent)
+scripts/check-agents.py                  both agent files parse, and each one owns a single document
 .gitignore                               keeps reviews/, the working intent/spec files and .venv/ out of git
 ```
 
@@ -82,7 +83,9 @@ Common setup, once per session:
    `intent_example.md`; a missing or unchanged `intent.md` is reported as a Blocking finding.
 2. In the new chat, open the agent dropdown in the chat input (the selector that shows **Agent**) and
    choose **intent_md_reviewer**. The list is built from `.github/agents/*.agent.md`; the name shown is
-   the `name:` field of the file.
+   the `name:` field of the file. If an agent is missing from the list, run
+   `python3 scripts/check-agents.py`: VS Code drops a file whose frontmatter does not parse without
+   reporting it, and an unquoted `: ` inside a value is enough to break it.
 3. Send this prompt, exactly:
 
 ```
@@ -170,7 +173,8 @@ or empty: that stays a Blocking `MISSING` with no report of substance.
 1. Make sure `spec.md` is at the workspace root. For a test run: `cp spec_example.md spec.md`. The first
    run archives it; a resubmission of identical content is reported as a Blocking finding, not reviewed
    twice.
-2. In the new chat, open the agent dropdown in the chat input and choose **spec_md_reviewer**.
+2. In the new chat, open the agent dropdown in the chat input and choose **spec_md_reviewer** (if
+   either agent is missing from the list, see the note at the end of step 2 above).
 3. Send this prompt, exactly:
 
 ```
@@ -356,6 +360,11 @@ repository, no gateway sandbox, no identity provider).
 | Criteria probed | 15, 0 fully testable | 22 assertions, 6 testable, 0 criteria complete |
 | Blocks with a verdict | 12 FAIL | 14 FAIL |
 | Verifier | `verify-report.py` exit 0 | `verify-report.py` exit 0 |
+
+Both agent files are checked before the dropdown is trusted: `python3 scripts/check-agents.py` (exit 0 =
+the frontmatter of both parses, each `name:` matches its file name, and neither agent names the other
+kit's scripts or finding ids). VS Code removes an agent whose frontmatter does not parse without
+reporting anything, so this is the only check that catches an agent that silently disappeared.
 
 ### Defects the runs found in the kits themselves, all fixed
 

@@ -1,7 +1,7 @@
 ---
 name: spec_md_reviewer
 description: QA review of a spec.md before implementation - contradictions, gaps, undefined behavior, untestable acceptance criteria, traceability to the intent, and the test-case data each criterion needs. Use when asked to review, triage or approve a specification, or to turn a spec into test cases and automation.
-argument-hint: spec.md
+argument-hint: "spec.md [+ any evidence files: earlier reports, annotated reports, report.csv, screenshots]"
 tools: ["read", "search", "edit", "execute"]
 ---
 

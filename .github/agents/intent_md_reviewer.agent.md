@@ -1,7 +1,7 @@
 ---
 name: intent_md_reviewer
 description: QA review of an intent.md before any implementation - contradictions, gaps, scope, untestable criteria. Use when asked to review, triage or approve an intent.md / feature intent / FR-style requirement document.
-argument-hint: intent.md [+ any evidence files: earlier reports, annotated reviews, answer sheets]
+argument-hint: "intent.md [+ any evidence files: earlier reports, annotated reviews, answer sheets]"
 tools: ["read", "search", "edit", "execute"]
 ---
 
