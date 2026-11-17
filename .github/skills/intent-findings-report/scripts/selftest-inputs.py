@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -538,10 +539,217 @@ def test_open_questions() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_manual_statements() -> None:
+    """A decision typed in the chat is a signed answer, recorded in a file the next run still reads."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-comments-"))
+    try:
+        (root / "reviews").mkdir()
+        # The resolver archived intent.md before the manifest runs: iteration 2 reviews report 1.
+        (root / "intent-2026-11-16-2.md").write_text(DOC)
+        baseline = (
+            "# Intent review\n"
+            "**Iteration:** 1\n\n"
+            "## 4. Findings\n\n"
+            "### INT-01 - The document carries no approval\n"
+            "**Severity:** Blocking · **Block:** B12 approval\n\n"
+            "**Question to the author**\n\n"
+            "1. Is this intent approved, and by whom?\n\n"
+            "**Close by:** Product / 2026-11-20\n\n"
+            "### INT-02 - Retention window contradicts itself\n"
+            "**Severity:** Important · **Block:** B03 scope\n\n"
+            "**Question to the author** 90 days or 30 days?\n\n"
+            "**Close by:** Finance / 2026-11-20\n\n"
+        )
+        (root / "reviews" / "intent-2026-11-16.findings-Iteration_1.md").write_text(baseline)
+
+        data, err = manifest(root, "--with-previous", "--comment", "B01 approval no required")
+        check("comment: the run succeeds", data is not None, err)
+        if data is None:
+            return
+        check(
+            "comment: the block id is read as the finding id",
+            data["manual_statements"][0]["finding_id"] == "INT-01",
+            str(data["manual_statements"]),
+        )
+        check(
+            "comment: the statement keeps every word the shell split",
+            data["manual_statements"][0]["statement"] == "approval no required",
+            str(data["manual_statements"][0].get("statement")),
+        )
+        check(
+            "comment: the statement is signed and dated by the script",
+            data["manual_statements"][0]["author"].endswith("(chat)")
+            and data["manual_statements"][0]["date"] == date.today().isoformat(),
+            str(data["manual_statements"][0]),
+        )
+        check(
+            "comment: the words are written to reviews/intent-comments-<date>.md",
+            data["comments_file"] == f"reviews/intent-comments-{date.today().isoformat()}.md",
+            str(data["comments_file"]),
+        )
+        check(
+            "comment: the file is an input of its own",
+            any(i["type"] == "manual-statements" and i["used"] for i in data["inputs"]),
+            str([i["type"] for i in data["inputs"]]),
+        )
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        check(
+            "comment: the statement closes the question it names",
+            questions["INT-01"]["status"] == "answered"
+            and questions["INT-01"]["answers"][0]["matched_by"] == "manual",
+            str(questions["INT-01"]),
+        )
+        check(
+            "comment: the question it does not name stays open",
+            questions["INT-02"]["status"] == "still_open",
+            str(questions["INT-02"]),
+        )
+        check(
+            "comment: the summary moves the question to answered",
+            data["answer_summary"]["answered"] == 1 and data["answer_summary"]["still_open"] == 1,
+            str(data["answer_summary"]),
+        )
+        check(
+            "comment: the citation is the line of the comments file",
+            questions["INT-01"]["answered_by"]["source"] == f"intent-comments-{date.today().isoformat()}.md"
+            and questions["INT-01"]["answered_by"]["line"] == 5,
+            str(questions["INT-01"].get("answered_by")),
+        )
+
+        # A decision, once written down and signed, is not re-asked every iteration.
+        again, err = manifest(root, "--with-previous")
+        check("comment: the statement is still read on the next run", again is not None, err)
+        if again is not None:
+            check(
+                "comment: without the flag the answer survives",
+                again["answer_summary"]["answered"] == 1
+                and [q for q in again["open_questions"] if q["finding_id"] == "INT-01"][0]["answers"][0][
+                    "matched_by"
+                ]
+                == "manual",
+                str(again["answer_summary"]),
+            )
+
+        # Repeating the same statement does not duplicate the line.
+        repeat, _ = manifest(root, "--with-previous", "--comment", "INT-01 approval no required")
+        text = (root / "reviews" / f"intent-comments-{date.today().isoformat()}.md").read_text()
+        check(
+            "comment: the same statement is not written twice",
+            repeat is not None and text.count("approval no required") == 1,
+            str(text.count("approval no required")),
+        )
+
+        # A statement with no id cannot decide anything, and says why.
+        bare, _ = manifest(root, "--comment", "this is fine as it is")
+        check(
+            "comment: a statement with no id is refused, not dropped",
+            bare is not None
+            and bare["manual_statements"][-1]["recorded"] is False
+            and "needs an id" in bare["manual_statements"][-1].get("reason", ""),
+            str(bare["manual_statements"] if bare else None),
+        )
+
+        # An id this report does not carry is still recorded: the decision is not about a question.
+        other, _ = manifest(root, "--comment", "INT-09 the budget line is approved", "--author", "Product (mail)")
+        check(
+            "comment: an id outside the report is recorded",
+            other is not None
+            and any(
+                s["finding_id"] == "INT-09" and s["recorded"] and s["in_baseline"] is False
+                for s in other["manual_statements"]
+            ),
+            str(other["manual_statements"] if other else None),
+        )
+        check(
+            "comment: the signature can be given explicitly",
+            other is not None
+            and any(s["author"] == "Product (mail)" for s in other["manual_statements"]),
+            str(other["manual_statements"] if other else None),
+        )
+        check(
+            "comment: a statement may contain a pipe",
+            other is not None
+            and any("|" in s["statement"] for s in other["manual_statements"]) is False
+            and any(s["statement"] == "the budget line is approved" for s in other["manual_statements"]),
+            str(other["manual_statements"] if other else None),
+        )
+        piped, _ = manifest(root, "--comment", "INT-02 sixty | ninety days, none of them thirty")
+        check(
+            "comment: the signature is always the last two fields, pipes included",
+            piped is not None
+            and any(
+                s["finding_id"] == "INT-02" and s["statement"] == "sixty | ninety days, none of them thirty"
+                for s in piped["manual_statements"]
+            ),
+            str(piped["manual_statements"] if piped else None),
+        )
+        check(
+            "comment: the manifest reports the file it wrote",
+            piped is not None and piped["comments_file"].startswith("reviews/intent-comments-"),
+            str(piped["comments_file"] if piped else None),
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+
+def test_outline() -> None:
+    """The map the agent reads first: sections with their line ranges, fences ignored."""
+    root = Path(tempfile.mkdtemp(prefix="outline-intent-"))
+    (root / "intent.md").write_text(
+        "# Title\n"
+        "intro line\n"
+        "## A\n"
+        "a1\n"
+        "a2\n"
+        "```\n"
+        "# not a heading, it is inside a fence\n"
+        "```\n"
+        "### B\n"
+        "b1\n"
+        "## C\n"
+        "c1\n"
+    )
+    data, err = manifest(root, "--outline")
+    check("outline parses", data is not None, err[:120])
+    if not data:
+        return
+    titles = [s["title"] for s in data["outline"]]
+    check("outline lists the real headings", titles == ["Title", "A", "B", "C"], str(titles))
+    check("outline ignores a heading inside a fence", "# not a heading" not in " ".join(titles))
+    ranges = {s["title"]: (s["line"], s["to"]) for s in data["outline"]}
+    check("outline gives A the lines it owns", ranges.get("A") == (3, 8), str(ranges.get("A")))
+    check("outline closes the last section at the end of the file", ranges.get("C") == (11, 12), str(ranges.get("C")))
+    plan = data["read_plan"]
+    check("read plan starts at line 1", bool(plan) and plan[0]["lines"].startswith("1-"), str(plan[:1]))
+    check("read plan ends at the last line", bool(plan) and plan[-1]["lines"].endswith("-12"), str(plan[-1:]))
+    check("outline output stays small", len(json.dumps(data)) < 4000, str(len(json.dumps(data))))
+
+
+def test_window() -> None:
+    """A window is the unit of reading: bounded, numbered, and it refuses to invent one."""
+    root = Path(tempfile.mkdtemp(prefix="window-intent-"))
+    body = "# Title\n" + "".join(f"line {i}\n" for i in range(2, 401))
+    (root / "intent.md").write_text(body)
+    data, err = manifest(root, "--window", "1")
+    check("window 1 reads", data is not None, err[:120])
+    if data:
+        check("window 1 starts at line 1", data["lines"].startswith("1-"), data["lines"])
+        check("window text is numbered", data["text"].splitlines()[0].startswith("1\t"), data["text"][:40])
+        check("window stays under 11 KB", len(data["text"]) < 11000, str(len(data["text"])))
+        check("window names how many there are", data["of"] >= 3, str(data["of"]))
+    over = subprocess.run([PY, str(INPUTS), "--root", str(root), "--window", "999"],
+                          capture_output=True, text=True)
+    check("a window past the end fails", over.returncode == 2 and "FAIL --window 999" in over.stderr,
+          over.stderr[:80])
+
 def main() -> int:
     test_manifest()
     test_doc_after_archival()
     test_open_questions()
+    test_manual_statements()
+    test_outline()
+    test_window()
     test_verify()
     print(f"\n{passed} passed, {failed} failed")
     return 0 if failed == 0 else 1

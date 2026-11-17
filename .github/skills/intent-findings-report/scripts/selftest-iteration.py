@@ -240,6 +240,40 @@ def main(argv: list[str]) -> int:
     v = run(str(VERIFIER), str(forced_rep), str(archive7))
     ok &= check("forced report passes the verifier", v.returncode == 0, v.stdout.strip()[-300:])
 
+    # 12. a run that died between the rename and the report is resumed, not blocked
+    dead = Path(tempfile.mkdtemp(prefix="intent-interrupted-"))
+    (dead / "reviews").mkdir()
+    (dead / f"intent-{DAY}-3.md").write_text(INTENT)
+    r = resolve(dead)
+    ok &= check(
+        "an archived document with no report is INTERRUPTED, not MISSING",
+        r["state"] == "INTERRUPTED" and r["review"] is True,
+        str(r["state"]),
+    )
+    ok &= check(
+        "the resumed review keeps the iteration the archive already took",
+        r["iteration"] == 3 and r["archive"].endswith(f"intent-{DAY}-3.md"),
+        f"{r['iteration']} / {r['archive']}",
+    )
+    ok &= check(
+        "the report goes to the iteration the archive owns",
+        Path(r["report"]).name == f"intent-{DAY}.findings-Iteration_3.md",
+        Path(r["report"]).name,
+    )
+    ok &= check(
+        "resuming renames nothing and creates no archive",
+        not (dead / "intent.md").exists()
+        and [p.name for p in dead.glob("intent-*.md")] == [f"intent-{DAY}-3.md"],
+        str(sorted(p.name for p in dead.glob("intent-*.md"))),
+    )
+    Path(r["report"]).write_text(short_report("FAIL", 3))
+    again = resolve(dead)
+    ok &= check(
+        "once its report is written the same state is a plain MISSING",
+        again["state"] == "MISSING" and again["review"] is False,
+        str(again["state"]),
+    )
+
     empty_ws = Path(tempfile.mkdtemp(prefix="intent-force-missing-"))
     (empty_ws / "reviews").mkdir()
     r = resolve(empty_ws, "--force")

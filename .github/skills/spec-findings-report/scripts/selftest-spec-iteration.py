@@ -217,7 +217,11 @@ def main(argv: list[str]) -> int:
         "old file name is rejected", v.returncode == 1 and "does not match" in v.stdout, v.stdout.strip()[-200:]
     )
 
-    # 7. a legacy-named report still reserves its number
+    # 7. a legacy-named report still reserves its number.
+    # The last archive already has its report: otherwise the run is INTERRUPTED and resumes it.
+    done = ws / "reviews" / f"spec-{DAY}.issues-Iteration_{n4}.md"
+    if not done.exists():
+        done.write_text(short_report("FAIL", n4, None))
     if bad.exists():
         bad.unlink()
     legacy = ws / "reviews" / f"spec-{DAY}-7.issues.md"
@@ -291,6 +295,131 @@ def main(argv: list[str]) -> int:
         "force cannot review an empty file",
         r["state"] == "MISSING" and r["review"] is False and r["forced"] is False,
         str(r["state"]),
+    )
+
+    # 9. --new: an unrelated document starts its own chain, at iteration 1, with no history
+    other = "# SPEC - audit log\n\n**Status:** draft\n\n## 1. Scope\n\n- The audit log keeps 90 days.\n"
+    (ws / "spec.md").write_text(other)
+    r = resolve(ws, "--new")
+    chain_n = r["chain"]
+    ok &= check(
+        "--new reviews as iteration 1 of a new chain",
+        r["state"] == "NEW" and r["iteration"] == 1 and r["new_chain"] is True and r["review"] is True,
+        str(r)[:300],
+    )
+    ok &= check(
+        "--new never reports a forced run",
+        r["forced"] is False,
+        str(r["forced"]),
+    )
+    ok &= check(
+        "the chain is numbered after the archive it started at",
+        chain_n == int(Path(r["archive"]).stem.rsplit("-", 1)[1]),
+        f"chain={chain_n} archive={r['archive']}",
+    )
+    ok &= check(
+        "a chain keeps its reports in reviews/chain-<n>/ with the same file name",
+        Path(r["report"]).parent.name == f"chain-{chain_n}"
+        and Path(r["report"]).name == f"spec-{DAY}.issues-Iteration_1.md",
+        str(r["report"]),
+    )
+    ok &= check("a new chain starts with no previous report", r["previous_report"] is None, str(r["previous_report"]))
+    ok &= check("the chain report path is free", not Path(r["report"]).exists(), str(r["report"]))
+    chain_rep = Path(r["report"])
+    chain_rep.parent.mkdir(parents=True, exist_ok=True)
+    chain_rep.write_text(full_report(Path(r["archive"]).name, 1, quote="The audit log keeps 90 days."))
+    v = run(str(VERIFIER), str(chain_rep), str(Path(r["archive"])))
+    ok &= check("a chain report passes the verifier", v.returncode == 0, v.stdout.strip()[-300:])
+
+    # 10. the next run stays in that chain and its delta reads the chain's own report
+    (ws / "spec.md").write_text(other.replace("90 days", "120 days"))
+    r = resolve(ws)
+    ok &= check(
+        "the next run continues the newest chain at iteration 2",
+        r["chain"] == chain_n and r["iteration"] == 2 and r["review"] is True,
+        str(r)[:300],
+    )
+    ok &= check(
+        "the delta is read against the chain's own previous report",
+        r["previous_report"] is not None
+        and Path(r["previous_report"]).name == f"spec-{DAY}.issues-Iteration_1.md"
+        and Path(r["previous_report"]).parent.name == f"chain-{chain_n}",
+        str(r["previous_report"]),
+    )
+    ok &= check(
+        "a chain iteration is numbered inside the chain, not over the history",
+        Path(r["report"]).name == f"spec-{DAY}.issues-Iteration_2.md"
+        and Path(r["report"]).parent.name == f"chain-{chain_n}",
+        str(r["report"]),
+    )
+
+    # 11. --new on identical text is still a new document, and two chains both own an Iteration_1
+    latest = max(ws.glob(f"spec-{DAY}-*.md"), key=lambda p: int(p.stem.rsplit("-", 1)[1]))
+    (ws / "spec.md").write_text(latest.read_text())
+    r = resolve(ws, "--new")
+    ok &= check(
+        "--new reviews even text identical to the last archive",
+        r["state"] == "NEW" and r["iteration"] == 1 and r["chain"] != chain_n,
+        str(r["state"]) + " " + str(r["chain"]),
+    )
+    ok &= check(
+        "two chains hold an Iteration_1 without colliding",
+        Path(r["report"]) != chain_rep and Path(r["report"]).name == chain_rep.name,
+        str(r["report"]),
+    )
+
+    # 12. --new never invents a file, and a blocked run is filed flat
+    empty_ws = Path(tempfile.mkdtemp(prefix="spec-new-missing-"))
+    (empty_ws / "reviews").mkdir()
+    r = resolve(empty_ws, "--new")
+    ok &= check(
+        "--new cannot review a missing spec.md",
+        r["state"] == "MISSING" and r["review"] is False and r["iteration"] == 1,
+        str(r["state"]),
+    )
+    ok &= check(
+        "a blocked --new run is filed in reviews/, not in a chain folder",
+        Path(r["report"]).parent.name == "reviews" and not any(Path(r["root"]).glob("reviews/chain-*")),
+        str(r["report"]),
+    )
+
+    # 13. a run that died between the rename and the report is resumed, not blocked
+    dead = Path(tempfile.mkdtemp(prefix="spec-interrupted-"))
+    (dead / "reviews" / "chain-3").mkdir(parents=True)
+    (dead / f"spec-{DAY}-3.md").write_text(SPEC)
+    r = resolve(dead)
+    ok &= check(
+        "an archived document with no report is INTERRUPTED, not MISSING",
+        r["state"] == "INTERRUPTED" and r["review"] is True,
+        str(r["state"]),
+    )
+    ok &= check(
+        "the resumed review keeps the iteration the archive already took",
+        r["iteration"] == 1 and r["chain"] == 3,
+        str(r["iteration"]) + " / " + str(r["chain"]),
+    )
+    ok &= check(
+        "the report goes next to the chain the archive opened",
+        Path(r["report"]).parent.name == "chain-3"
+        and Path(r["report"]).name == f"spec-{DAY}.issues-Iteration_1.md",
+        str(r["report"]),
+    )
+    ok &= check(
+        "resuming renames nothing: the archive is the document under review",
+        Path(r["archive"]).name == f"spec-{DAY}-3.md" and not (dead / "spec.md").exists(),
+        str(r["archive"]),
+    )
+    ok &= check(
+        "no new archive is created while resuming",
+        [p.name for p in dead.glob("spec-*.md")] == [f"spec-{DAY}-3.md"],
+        str(sorted(p.name for p in dead.glob("spec-*.md"))),
+    )
+    Path(r["report"]).write_text(short_report("FAIL", 1, None))
+    again = resolve(dead)
+    ok &= check(
+        "once its report is written the same state is a plain MISSING",
+        again["state"] == "MISSING" and again["review"] is False,
+        str(again["state"]),
     )
 
     if "--keep" in argv:

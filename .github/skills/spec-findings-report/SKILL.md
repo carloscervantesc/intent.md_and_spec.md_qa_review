@@ -37,16 +37,19 @@ mkdir -p reviews
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)"
 # a forced re-review of an unchanged file: same command, one flag
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)" --force
+# a different piece of work: iteration 1 of a new chain, no history read
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)" --new
 ```
 
 The script looks for `spec.md`, finds the highest archived iteration, compares content (trailing
-whitespace excluded) and prints JSON. Three states:
+whitespace excluded) and prints JSON. Four states:
 
 | `state` | `review` | What happened | What you write |
 | --- | --- | --- | --- |
 | `NEW` | `true` | `spec.md` differed and was renamed to `spec-YYYY-MM-DD-<n>.md` | the full report for `Iteration_<n>`, at `report` |
 | `UNCHANGED` | `false` | `spec.md` is identical to the last archive | the short FAIL report at `report`: Blocking, nothing changed since iteration `<last_iteration>` |
-| `MISSING` | `false` | no `spec.md`, or an empty one | the short FAIL report at `report`: Blocking, no `spec.md` |
+| `MISSING` | `false` | no `spec.md`, or an empty one, and the last archive already has its report | the short FAIL report at `report`: Blocking, no `spec.md` |
+| `INTERRUPTED` | `true` | `spec.md` was archived as `spec-YYYY-MM-DD-<n>.md` and that archive's report was never written - the previous run stopped after the rename | the full report for the archive, at `report`; nothing is renamed again |
 
 Read `report` from the JSON and write there - never compose the path yourself. `<n>` is one more than
 every iteration the workspace already shows, counting both archives (`spec-*.md`) and reports
@@ -54,11 +57,17 @@ every iteration the workspace already shows, counting both archives (`spec-*.md`
 
 - a report is a deliverable, so an existing report is **never** overwritten, even when the resolver is
   pointed at the wrong directory or a run has to be repeated;
-- in a `NEW` run the archived file and the report carry the same `<n>`, so `spec-YYYY-MM-DD-<n>.md` and
-  `issues-Iteration_<n>` always name the same iteration.
+- in a `NEW` run of the first chain the archived file and the report carry the same `<n>`, so
+  `spec-YYYY-MM-DD-<n>.md` and `issues-Iteration_<n>` always name the same iteration. After `--new` they
+  diverge on purpose: the archive keeps the workspace-wide number that keeps it unique, and the report
+  carries the iteration inside its chain (1, 2, 3...).
 
 Never create, restore or reconstruct `spec.md`; if it is missing, that is the author's action, reported
-as Blocking. Never renumber an existing archive or report to make room.
+as Blocking - **unless** it is missing because the last run archived it and died before writing the
+report. That is `INTERRUPTED`, and the resume is the same prompt sent again: `spec.md` is not restored,
+the archive is reviewed, the iteration is the one the archive already took, and no new number is spent.
+Writing a `MISSING` report over a pending `INTERRUPTED` run leaves a document that was archived and
+never reviewed. Never renumber an existing archive or report to make room.
 
 ### Forced re-review (`--force`)
 
@@ -78,6 +87,36 @@ second reviewer, a documented re-confirmation), not progress, and never a way to
 
 Everything after step 0 is unchanged: the forced run is a full review of the archive the resolver
 produced, checked by the same verifier. Never mark a report forced unless the JSON said `forced: true`.
+
+### A new line of work (`--new`)
+
+One workspace, several unrelated documents over time - a second feature, a rewrite that is not a
+continuation, a spec that belongs to another intent. `--new` says so: the current `spec.md` is archived
+as usual and reviewed as **iteration 1 of a new chain**, and nothing from the previous document is read.
+
+```bash
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)" --new
+python3 .github/skills/spec-findings-report/scripts/spec-inputs.py --new
+```
+
+| | Normal run | `--new` run |
+| --- | --- | --- |
+| the file | compared with the last archive | archived and compared with nothing: a different document |
+| `iteration` | `1 + max` over the whole history | `1`, inside the chain the resolver returns in `chain` |
+| `previous_report` | the newest earlier report of this document | `null` - there is no earlier report of this document |
+| the report | `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md` | same file name, in `reviews/chain-<n>/` |
+| the inputs | earlier reports, their `_answers.md`, `spec-comments-*.md` | none of them: only the file under review and what `--input` names |
+| findings | continue the numbering | restart at `SPEC-01`, a new document has a new history |
+
+`chain` is the archive number the line of work started at, and it never changes: every later run without
+`--new` continues the newest chain (its reports sit in the same folder, `previous_report` is read from
+there, and the delta compares the two). Two chains can therefore both hold an
+`issues-Iteration_1.md` without touching each other. `--comment` statements are written into the chain
+folder too, so a decision about one document is never cited as an answer for another.
+
+`--new` is a decision of the requester, never a reviewer's convenience: without it, an unchanged file is
+`UNCHANGED` and a rewritten one continues its own history. `MISSING` stays `MISSING` with or without the
+flag, and that short report is filed in `reviews/` - a blocking run never creates a chain folder.
 
 ### The short report (a run that is not a review)
 
@@ -122,7 +161,16 @@ Two of them are found without being named:
 python3 .github/skills/spec-findings-report/scripts/spec-inputs.py \
   --with-previous --input <path> --input <path>     # any number of --input
 python3 .../spec-inputs.py --scan-dir <folder>      # any other folder, instead of naming files
+python3 .../spec-inputs.py --comment "SP01 approval not required"   # a decision taken in the chat
+python3 .../spec-inputs.py --outline                # the map: every heading with the lines it owns
+python3 .../spec-inputs.py --window 5               # read one window: numbered, at most 150 lines
 ```
+
+`--outline` and `--window` are how the document is read, not a convenience: one window is one tool
+result of at most about 10 KB, and a 600-line spec read whole is forty. A request that carries the
+whole document is the request the client stops answering (*"Sorry, no response was returned"*, or
+silence after three retries). `--window` refuses a number past the last window, so the count comes from
+`--outline`, never from a guess.
 
 `--with-previous` reads the newest plain report in `reviews/`, the baseline the delta compares
 against.
@@ -144,6 +192,17 @@ and the older `**Question to the author:** text` - and returns `baseline`, `answ
 A `subject` match is a proposal: read the question and the answer together and cite both before you rely
 on it. `orphans` - an answer matched to no question - is a hint about where an answer belongs, never an
 answer.
+
+**A statement typed in the chat (`--comment`) is a signed answer.** `--comment "SP01 approval not
+required"` writes one line to `reviews/spec-comments-YYYY-MM-DD.md` - `- **SPEC-01** | approval not
+required | <author> | <date>` - and returns it in `manual_statements` (`finding_id`, `statement`,
+`author`, `date`, `source`, `line`, `recorded`, `in_baseline`). The id may be typed `SP01`, `SP-1` or
+`SPEC-1`; it is normalised to `SPEC-nn`. That line is the source of the register row
+(`spec-comments-YYYY-MM-DD.md (l.N)`), the file is named in `Inputs reviewed`, and it is passed to the
+verifier as `--input`. A statement with no id is refused by the script with a reason - ask the user
+which finding it decides instead of inventing one. A statement naming an id the earlier report never
+used is still recorded (`in_baseline: false`): it decides a finding this review opened. The file is
+re-read on every later run, so a decision stays on the record without being retyped.
 
 **Annotation syntax** inside an earlier report (the first two attach to the `SPEC-nn` heading above
 them; an answer may wrap over several lines - a comment is closed by `-->`, not by the end of a line):
@@ -168,6 +227,7 @@ and `date`/`fecha` are used when present. A sheet without a header is read as
 | `data` | technical data with no answer rows (`report.csv`): context you may cite, never a disposition |
 | `report-example` | align structure and wording; this skill's template wins on any conflict |
 | `answers-csv` | same weight as an annotation, one row per finding |
+| `manual-statements` | `reviews/spec-comments-YYYY-MM-DD.md`, written by `--comment`: what the requester decided in the chat | a signed, dated answer - cite the line, close the question it names, and only then withdraw the finding |
 | `image` | a screenshot, mock-up or diagram: named in the inputs table, described only if you actually saw it in the conversation, never a source of a quote and never the only basis of a finding |
 | `notes` | context; an answer still needs author and date |
 | `answer-key` (`RUBRIC_*`), `binary`, `duplicate` | refused, with the reason, and named in the report |
@@ -347,6 +407,13 @@ Record it in §12 as an assumption with the owner below.
 - If the author cannot decide, the default must be a real default with a stated consequence, never "TBD".
 - Questions are numbered and answerable. No question that the document already answers.
 - `Minor` findings keep the same shape but may collapse `Context` and `If it ships` into one line.
+- **Size is a rule, not a preference.** A block is at most 20 lines: at most two quotes, each at most two
+  lines of the document, and `Context`, `If it ships`, options and the AC block in one sentence each.
+  A finding that does not fit is two findings, or one finding plus a table row pointing at a section
+  (`§7 (l.190-214)`). A 60-page spec produces a long report on its own - padding each block turns it into
+  a request the chat client drops mid-answer, and then nobody gets a report at all.
+- **Evidence tables stop at 15 rows.** Above that, list the first rows and add one line with the total and
+  where the rest lives. Repeating the document inside the report protects nobody.
 
 ## Mechanical self-check before you claim the report exists
 

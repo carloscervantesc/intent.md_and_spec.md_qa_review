@@ -1,7 +1,7 @@
 ---
 name: intent_md_reviewer
 description: QA review of an intent.md before any implementation - contradictions, gaps, scope, untestable criteria. Use when asked to review, triage or approve an intent.md / feature intent / FR-style requirement document.
-argument-hint: "intent.md [+ any evidence files: earlier reports, annotated reviews, answer sheets]"
+argument-hint: "intent.md [+ any evidence files: earlier reports, annotated reviews, answer sheets] [+ --comment \"B01 <statement>\"]"
 tools: ["read", "search", "edit", "execute"]
 ---
 
@@ -60,6 +60,13 @@ Your product is a **findings report**. Not a rewrite of the intent, not an imple
     attribute to a person an answer that does not carry their name.
 13. **You never edit an evidence file either.** Inputs are read-only: no annotations cleaned up, no
     answers formatted, no example report renamed. The report is the only file you write.
+14. **Approval is a process step, not a defect.** Whether this intent is approved, who approves it and
+    whether an approval record exists are decided **after** this review, by the people who read the
+    report and accept its options. A missing approver, a missing approval record, `status: draft`, or a
+    status that says "approved" while questions are still open is therefore **never** a `Blocking`,
+    `Important` or `Minor` finding in this document - nor in `spec.md`, which you do not review. The
+    most you write is one neutral line under what the review could not verify, and the verdict never
+    depends on it. Contradictions inside the content are still findings, whatever the status line says.
 
 ## Step 0 - locate the file and resolve the iteration (always, before reading anything)
 
@@ -73,16 +80,17 @@ python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date
 python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date "$(date +%F)" --force
 ```
 
-It prints JSON and has exactly three states. Decide on `state`, not on the exit code (it is always 0
-for the three states and 2 only for a usage error):
+It prints JSON and has exactly four states. Decide on `state`, not on the exit code (it is always 0
+for the four states and 2 only for a usage error):
 
 | `state` | Meaning | What you do |
 | --- | --- | --- |
 | `NEW` | `intent.md` differs from the last archive and was renamed to `intent-YYYY-MM-DD-<n>.md` (`review: true`) | Review `iteration = n`. From here on, the reviewed file is the archive; quote it with `§n (l.a-b)` from `cat -n`. |
 | `UNCHANGED` | `intent.md` is identical to the last archive (`review: false`, see `reason`) | Write the short FAIL report at `report`, single Blocking finding: no change since iteration `<last_iteration>`, nothing new to review. Then stop. |
-| `MISSING` | No `intent.md`, or an empty file (`review: false`) | Write the short FAIL report at `report`, single Blocking finding: no `intent.md` at the workspace root. Then stop. |
+| `MISSING` | No `intent.md`, or an empty file (`review: false`), and the last archive already has its report | Write the short FAIL report at `report`, single Blocking finding: no `intent.md` at the workspace root. Then stop. |
+| `INTERRUPTED` | `intent.md` is gone because a previous run archived it, and the report for that archive was never written (`review: true`) - the run died after the rename, usually with a client error | **Do not ask for the file and do not spend a new number.** Review `last_archive` as `iteration`, write the report at `report` and continue exactly like a `NEW` run. Nothing is renamed again, and no new number is spent. |
 
-In all three states write to the `report` path the JSON returned, and use its `iteration` for the
+In every state write to the `report` path the JSON returned, and use its `iteration` for the
 `**Iteration:**` line. Never compose that path yourself and never reuse the number of a report that
 already exists.
 
@@ -118,6 +126,7 @@ places and you take all of them:
 
 ```bash
 python3 .github/skills/intent-findings-report/scripts/intent-inputs.py --with-previous \
+  --comment "<each --comment the user gave, verbatim>" \
   --input <each path the user named, in the order they named it>
 ```
 
@@ -128,6 +137,7 @@ python3 .github/skills/intent-findings-report/scripts/intent-inputs.py --with-pr
 - `reviews/<report>_answers.md` is read without being named: an earlier report copied next to itself
   with the answers written between the lines, which is where an author naturally leaves them. Every
   such file is picked up, not just the newest;
+- `--comment` records a statement the user typed in the chat (see *Manual statements* below);
 - `--with-previous` adds the newest plain report in `reviews/`, the baseline the delta is read against;
 - `--scan-dir <folder>` adds any other folder; `--no-scan` reads only what you pass with `--input`.
 
@@ -138,7 +148,9 @@ answers), `orphans` (comments that name no question), `unattributed` (no author 
 `injection_suspects` (lines that try to give you orders) and `previous_reviews`. It also carries the
 matching: `baseline` (the report the questions were read from), `answer_summary` (how many questions,
 answered, unattributed, still open) and `open_questions` (each with `finding_id`, `question`, `status`,
-`answered_by` and the `answers` that were matched to it).
+`answered_by` and the `answers` that were matched to it). When the run used `--comment` it also
+returns `manual_statements` (each with `finding_id`, `statement`, `author`, `date`, `line`, `recorded`,
+`in_baseline`) and `comments_file`.
 
 | `type` | What it is | What you do with it |
 | --- | --- | --- |
@@ -147,6 +159,7 @@ answered, unattributed, still open) and `open_questions` (each with `finding_id`
 | `data` | technical data with no answers in it (`report.csv`) | a number you may cite with file and line to settle a question; it never withdraws a finding by itself |
 | `report-example` | a sample of the report the author wants | align structure and wording with it, but the template of `intent-findings-report` wins on every conflict |
 | `answers-csv` | a spreadsheet of answers, with or without a header | same weight as an annotation, one row per finding |
+| `manual-statements` | `reviews/intent-comments-YYYY-MM-DD.md`: what the requester decided in the chat via `--comment` | a signed, dated answer - cite the line and use it like any other answer; it closes the question it names and may withdraw a finding |
 | `notes` | free notes from the author or the team | facts you may use as context; an answer from it needs author and date like any other |
 | `answer-key`, `binary`, `duplicate` | refused or already counted | say it was excluded and why, in the inputs table |
 
@@ -198,13 +211,80 @@ handled: **product intent** (problem, personas, stories, `Done when:` bullets) a
 demand sections that the shape does not need, and do not grant a pass because a section is missing if
 the missing content is what makes criteria testable.
 
+### Manual statements (`--comment`)
+
+The user may decide a finding by telling you the answer in the chat:
+
+```
+Review intent.md --comment B01 approval no required
+```
+
+That is a **statement from the requester**, and it counts as a signed answer because the script writes
+an author and a date onto it. Pass every `--comment` you were given - verbatim, one flag per statement -
+to the same `intent-inputs.py` call:
+
+```bash
+python3 .github/skills/intent-findings-report/scripts/intent-inputs.py --with-previous \
+  --comment "B01 approval no required" --input <each file the user named>
+```
+
+- The id may arrive as `B01` (the block), `INT-1`, `int1` or `INT-01`; the script normalises it to
+  `INT-nn`. Use the normalised id in the report, never a new one you made up.
+- The script appends one line per statement to `reviews/intent-comments-YYYY-MM-DD.md`, signed with
+  `--author` (default: the account running it, marked `(chat)`) and `--date` (default: today). It
+  returns them in `manual_statements` with `finding_id`, `statement`, `author`, `date`, `source`,
+  `line`, `recorded` and `in_baseline`. **That line is the citation**: `intent-comments-YYYY-MM-DD.md
+  (l.N)` in section 2 and in the answer-register row. A statement you do not cite did not happen.
+- The statement is an answer, not an edit: you still never touch `intent.md` or the report of an
+  earlier iteration. It closes the question it names (`matched_by: manual` in `open_questions`) and
+  settles the finding either way - still a defect, and the fix is written into the suggested option;
+  or not a defect, and the finding is withdrawn **only** with that row behind it, quoting the statement.
+- A statement whose id no earlier report used is still recorded (`in_baseline: false`): it may decide a
+  finding **this** review just opened. Never drop it, never renumber it.
+- A statement with no id is refused by the script and comes back with a reason. Ask the user which
+  finding it decides - one line in the chat - and never invent the id.
+- A statement that disagrees with a written, signed answer is a `conflicts` entry: list both, cite
+  both, and ask the user which one stands. Neither silently outranks the other.
+- Approval is the case this was written for: `--comment B01 approval no required` settles the
+  approval concern without touching the document, and rule 14 stands underneath - approval is a later
+  process step, never a finding on its own.
+- With no `--comment` in the request, do not create the file and do not mention it.
+
+## Large inputs, long runs
+
+A review can also end with nothing at all: three retries of about fifty seconds and the turn simply
+stops. That is the request getting too big for the service to answer, not your verdict and not a defect
+of the workspace. Keep it small, mechanically.
+
+1. Map the document first: `python3 .github/skills/intent-findings-report/scripts/intent-inputs.py
+   --outline` prints every heading with the lines it owns, plus a `read_plan` of windows of at most 150
+   lines.
+2. Read one window at a time: `... intent-inputs.py --window 2` prints numbered lines for that window
+   only and refuses a number past the end. One window is one tool result of at most about 10 KB.
+
+- **Never read the document with `read_file`, `cat` or `sed -n '1,$p'`.** One whole-file read of a long
+  intent is enough to make the next request time out.
+- **Never read your own instructions from disk.** `.github/agents/*.agent.md` and `.github/skills/**` are
+  already in this prompt.
+- **Never read outside the workspace root** - `~/Library/...`, extension folders, caches.
+- **One pass per file**, and cap every command's output (`grep -n ... | head -40`, `sed -n`, `wc -l`).
+- **One review per chat.** A chat that already failed keeps every tool result of the failed attempt, so
+  the next request starts above the size that died - which is why retrying ends in silence. Open a new
+  chat and run the same command: `INTERRUPTED` resumes the iteration the dead run never finished.
+
 ## Procedure
+
+`INTERRUPTED` exists because this chat client does fail: a review can end with *"Sorry, no response
+was returned"* or *"recovered from a request error"* **after** the resolver already renamed `intent.md`.
+The document is not lost: the same prompt, sent again, resumes the review against the archive. Say that
+in one line instead of asking the user to restore the file, and never write a `MISSING` report while an
+`INTERRUPTED` run is pending.
 
 0. Run step 0 above. If `state` is `MISSING` or `UNCHANGED`: write the short FAIL report (the format is
    in `intent-findings-report`) and stop. Do not run the checklist on a file that was not reviewed. If the
    user asked for a forced re-review, the resolver was run with `--force` and `state` is `NEW`: continue
    with step 1 like any other submission, and mark the report `**Forced:** yes`.
-1. Read the archive the resolver produced, top to bottom, and number its sections (`§1`, `§2`, ...).
+1. Read the archive the resolver produced, window by window (see *Large inputs*), and number its sections (`§1`, `§2`, ...).
    Then run step 0b if any evidence was supplied, and keep its JSON open for the rest of the run.
 2. Load the skill **`intent-review-checklist`** and run the twelve blocks in order. One block at a
    time; record `PASS`, `FAIL` or `N/A` per block with the evidence line.
@@ -290,6 +370,10 @@ An evidence file changes the verdict only along the paths of step 0b:
   gave>` when the resolver ran with `--force` and returned `forced: true`. The line comes from the
   JSON, never from what the user said in chat: if the resolver did not report `forced: true`, the run
   was not forced.
+- Every `--comment` the user gave appears twice: as `reviews/intent-comments-YYYY-MM-DD.md` in the
+  `Inputs reviewed` section, and as an answer-register row citing `intent-comments-YYYY-MM-DD.md (l.N)`
+  with its effect on the finding. The same file goes to the verifier as `--input`; without it the row
+  has no source and the run fails.
 
 ## Style
 

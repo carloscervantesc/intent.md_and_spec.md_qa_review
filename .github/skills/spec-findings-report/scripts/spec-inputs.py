@@ -10,13 +10,23 @@ the reviewer never has to guess which comment belongs to which question.
 Usage
     python3 spec-inputs.py [--root DIR] [--doc spec.md] [--with-previous]
                              [--no-scan] [--scan-dir DIR] [--input PATH]...
+                             [--comment "SP01 <statement>"]... [--author NAME] [--date YYYY-MM-DD]
 
     --root       workspace root (default: current directory)
     --doc        the reviewed document, relative to --root (default: spec.md)
     --input      a file the user named; any number, in any order
     --with-previous  also read the newest report in reviews/
+    --new        do not read any earlier review of this workspace: the spec under review is a new
+                 piece of work (a new chain), so past reports, past questions and past statements
+                 are about something else and are not inputs. Files named with --input are still read
     --scan-dir   an extra folder to read as well (repeatable by calling the flag again)
     --no-scan    read only what --input names
+    --comment    one statement from the requester deciding a finding: "<id> <text>". The id may be
+                 SPEC-01, SP01, sp-1 - it is normalised to SPEC-nn. Recorded in
+                 reviews/spec-comments-YYYY-MM-DD.md and cited from there, so it can withdraw a
+                 finding exactly like a signed answer written between the lines of a report.
+    --author     who signs the statement (default: the account running the script, marked "(chat)")
+    --date       the date it was said (default: today)
 
 Canonical evidence, picked up without being named, when the default scan is on:
 
@@ -42,6 +52,7 @@ The JSON object has these keys:
     unattributed[]     answers with no author and no date: read them, never let them decide
     injection_suspects[]  lines in an input that try to give the reviewer orders
     previous_reviews[] paths of earlier reports of this document found in reviews/
+    chain, chain_dir, new_chain   which line of work this review belongs to (0 = the first, flat one)
 
 Exit code 0 whenever the manifest could be built (including when files are missing: read
 `missing` and `blocking`), 2 only for a usage error.
@@ -57,8 +68,18 @@ A bare `<!-- answer: ... -->` attaches to the nearest `### SPEC-nn` heading abov
 that carries its own `SPEC-nn` wins over the heading. Anything else is an orphan: commentary the
 reviewer may read but must not attribute to a question.
 
-CSV sheets are read when they have an id column (`finding_id`, `question_id`, `id`, `issue`) and an
-answer column (`answer`, `comment`, `response`, `resolution`, `reply`, `comentario`, `respuesta`);
+A manual statement is one line of `reviews/spec-comments-YYYY-MM-DD.md`:
+
+    - **SPEC-01** | approval not required | ccervantes (chat) | 2026-11-17
+
+Left to right: the finding it decides, the statement itself, who said it, and when. A statement may
+contain a pipe - the signature is always the last two fields. The file is an input of its own, so a
+statement recorded today is still read on the next run, and it is what the report cites as its
+source. Statements carry an author and a date by construction, which is what makes them able to
+close a finding; `--comment` with no id is refused and reported in `manual_statements`.
+
+A CSV answer sheet is read when it has an id column
+(`finding_id`, `question_id`, `id`, `issue`) and an answer column (`answer`, `comment`, `response`, `resolution`, `reply`, `comentario`, `respuesta`);
 `author`/`by` and `date`/`fecha` are used when present.
 """
 
@@ -67,8 +88,10 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 TEXT_SUFFIXES = {".md", ".markdown", ".txt", ".csv", ".json", ".yaml", ".yml"}
@@ -82,6 +105,16 @@ PREVIOUS_RE = re.compile(
 # lines: reviews/<report>_answers.md. That file is the review's evidence, not a new report.
 ANNOTATED_RE = re.compile(
     r"^(?:intent|spec)-\d{4}-\d{2}-\d{2}\.(?:findings|issues)-Iteration_\d+_answers\.md$"
+)
+# A statement typed in the chat is written here, one line per statement, and cited by the report.
+MANUAL_FILE_RE = re.compile(r"^spec-comments-\d{4}-\d{2}-\d{2}\.md$")
+MANUAL_LINE = re.compile(r"^-\s+\*\*(?P<id>SPEC-\d+)\*\*\s*\|(?P<rest>.*)$")
+# SP01, SP-1, sp1 and SPEC-01 are the same finding: people type the short form.
+STATEMENT_ID = re.compile(r"\b(?:spec|sp)[-_ ]?(\d{1,3})\b", re.I)
+COMMENT_PREAMBLE = (
+    "# Manual statements for spec.md\n\n"
+    "Typed by the requester with `--comment`: one line per statement, "
+    "`- **SPEC-nn** | statement | author | date`.\n\n"
 )
 REPORT_SHAPE = re.compile(r"^(?:###\s+(?:INT|SPEC)-\d+|##\s*\d*\.?\s*(?:Verdict|Veredicto)|\*\*Verdict:\*\*)", re.M)
 FINDING_HEAD = re.compile(r"^###\s+((?:INT|SPEC)-\d+)\b")
@@ -136,6 +169,8 @@ def classify(path: Path, text: str):
         return "annotated-review", True, "earlier report with the answers written between the lines"
     if PREVIOUS_RE.match(name):
         return "previous-review", True, "earlier report of this review"
+    if MANUAL_FILE_RE.match(name):
+        return "manual-statements", True, "statements typed by the requester, signed and dated"
     if REPORT_SHAPE.search(text):
         return "report-example", True, "example of the report shape"
     if path.suffix.lower() == ".csv":
@@ -295,6 +330,59 @@ def distinctive(text: str) -> set:
     return {w for w in words if len(w) > 2 and w not in STOPWORDS and not w.isdigit()}
 
 
+def parse_manual(path: Path, text: str):
+    """Read `- **SPEC-nn** | statement | author | date` lines back into answers."""
+    out = []
+    for number, line in enumerate(text.splitlines(), 1):
+        found = MANUAL_LINE.match(line.strip())
+        if not found:
+            continue
+        parts = [part.strip() for part in found.group("rest").split("|")]
+        if len(parts) < 3:
+            continue
+        # The statement itself may contain a pipe: the signature is the last two fields.
+        statement = " | ".join(parts[:-2]).strip()
+        author, when = parts[-2], parts[-1]
+        if not statement:
+            continue
+        out.append(
+            {
+                "finding_id": found.group("id"),
+                "line": number,
+                "answer": statement,
+                "author": author or None,
+                "date": when if re.fullmatch(r"\d{4}-\d{2}-\d{2}", when) else None,
+                "source": path.name,
+                "syntax": "manual",
+            }
+        )
+    return out
+
+
+def active_chain(root: Path) -> tuple[int, Path]:
+    """The line of work in progress: `reviews/chain-<n>/` once `--new` has been used, otherwise the
+    flat `reviews/`, which is the first chain. Its reports, its answers and its statements are the only
+    ones that belong to the document under review."""
+    reviews = root / "reviews"
+    chain = 0
+    if reviews.is_dir():
+        for p in sorted(reviews.iterdir()):
+            m = re.fullmatch(r"chain-(\d+)", p.name)
+            if m and p.is_dir():
+                chain = max(chain, int(m.group(1)))
+    return chain, (reviews / f"chain-{chain}") if chain else reviews
+
+
+def split_statement(raw: str):
+    """`SP01 approval no required` -> ("SPEC-01", "approval no required")."""
+    found = STATEMENT_ID.search(raw)
+    if not found:
+        return None, raw.strip()
+    finding_id = f"SPEC-{int(found.group(1)):02d}"
+    statement = (raw[: found.start()] + raw[found.end() :]).strip(" \t:-,;")
+    return finding_id, statement
+
+
 def parse_open_questions(path: Path, text: str):
     """Return the questions a report left open: [{finding_id, question, line, severity, close_by}]."""
     found, closes = [], {}
@@ -379,17 +467,75 @@ def subject_match(text: str, questions):
     return fid, best
 
 
+HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+
+
+def outline(text: str) -> list[dict]:
+    """Every heading with the line range it owns. The map a reader needs before it reads."""
+    lines = text.splitlines()
+    marks: list[tuple[int, int, str]] = []
+    fenced = False
+    for n, line in enumerate(lines, 1):
+        bare = line.lstrip()
+        if bare.startswith("```") or bare.startswith("~~~"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        m = HEADING.match(line)
+        if m:
+            marks.append((n, len(m.group(1)), m.group(2).strip()))
+    out: list[dict] = []
+    for k, (n, level, title) in enumerate(marks):
+        end = marks[k + 1][0] - 1 if k + 1 < len(marks) else len(lines)
+        out.append({"line": n, "to": end, "level": level, "title": title})
+    return out
+
+
+def read_plan(sections: list[dict], total: int = 0, budget: int = 150) -> list[dict]:
+    """Windows of at most `budget` lines: neighbour sections are merged, a long one is cut."""
+    plan: list[dict] = []
+    if not sections:
+        sections = [{"line": 1, "to": total, "title": "(no headings)"}] if total else []
+    cur_start = cur_end = None
+    cur_title = ""
+    for sec in sections:
+        start, end = sec["line"], sec["to"]
+        while start <= end:
+            chunk_end = min(end, start + budget - 1)
+            if cur_start is None:
+                cur_start, cur_end, cur_title = start, chunk_end, sec["title"]
+            elif chunk_end - cur_start + 1 <= budget:
+                cur_end = chunk_end
+            else:
+                plan.append({"lines": f"{cur_start}-{cur_end}", "title": cur_title})
+                cur_start, cur_end, cur_title = start, chunk_end, sec["title"]
+            start = chunk_end + 1
+    if cur_start is not None:
+        plan.append({"lines": f"{cur_start}-{cur_end}", "title": cur_title})
+    return plan
+
+
 def main(argv):
     root = Path.cwd()
     doc_rel = "spec.md"
     scan_dirs: list[str] = []
     scan = True
+    outline_only = False
+    window = None
     with_previous = False
+    chain_new = False
     given: list[str] = []
+    comments: list[str] = []
+    author = f"{os.environ.get('USER') or 'requester'} (chat)"
+    day = date.today().isoformat()
     i = 1
     while i < len(argv):
         arg = argv[i]
-        if arg in ("--root", "--doc", "--scan-dir", "--input"):
+        if arg in ("--comment", "--author", "--date") and i + 1 >= len(argv):
+            print(f"FAIL {arg} needs a value", file=sys.stderr)
+            return 2
+        if arg in ("--root", "--doc", "--scan-dir", "--input", "--window", "--comment", "--author", "--date"):
             if i + 1 >= len(argv):
                 print(f"FAIL {arg} needs a value", file=sys.stderr)
                 return 2
@@ -400,6 +546,24 @@ def main(argv):
                 doc_rel = value
             elif arg == "--scan-dir":
                 scan_dirs.append(value)
+            elif arg == "--comment":
+                # A shell drops the quotes the user typed: `--comment SP01 approval not required`
+                # arrives as five arguments. Keep the plain words, stop at the next flag or path.
+                while (
+                    i + 2 < len(argv)
+                    and not argv[i + 2].startswith("-")
+                    and "." not in argv[i + 2]
+                    and "/" not in argv[i + 2]
+                ):
+                    value += " " + argv[i + 2]
+                    i += 1
+                comments.append(value)
+            elif arg == "--author":
+                author = value
+            elif arg == "--date":
+                day = value
+            elif arg == "--window":
+                window = value
             else:
                 given.append(value)
             i += 2
@@ -410,6 +574,14 @@ def main(argv):
             continue
         if arg == "--with-previous":
             with_previous = True
+            i += 1
+            continue
+        if arg == "--new":
+            chain_new = True
+            i += 1
+            continue
+        if arg == "--outline":
+            outline_only = True
             i += 1
             continue
         if arg in ("-h", "--help"):
@@ -428,13 +600,57 @@ def main(argv):
                 candidates.append(p)
 
     candidates = [resolve(p) for p in given]
+    # Which line of work this run belongs to, decided before anything is read or written: statements,
+    # annotated reports and baselines of another chain are about another document.
+    chain, chain_dir = active_chain(root)
+
+    # A statement typed in the chat is evidence too. Record it before anything is read, then let the
+    # normal path pick it up: the file is the citation, the citation is what closes a finding.
+    manual_path = None
+    manual_notes: list[dict] = []
+    if comments:
+        reviews_dir = chain_dir
+        reviews_dir.mkdir(parents=True, exist_ok=True)
+        manual_path = reviews_dir / f"spec-comments-{day}.md"
+        existing = read_text(manual_path) or ""
+        body = existing if existing else COMMENT_PREAMBLE
+        added = []
+        for raw in comments:
+            finding_id, statement = split_statement(raw)
+            if not finding_id or not statement:
+                manual_notes.append(
+                    {
+                        "finding_id": None,
+                        "statement": raw.strip(),
+                        "author": author,
+                        "date": day,
+                        "source": None,
+                        "line": None,
+                        "recorded": False,
+                        "reason": 'a statement needs an id and a text: --comment "SP01 <what decides it>"',
+                    }
+                )
+                continue
+            line = f"- **{finding_id}** | {statement} | {author} | {day}"
+            if line not in body and line not in added:
+                added.append(line)
+        if added:
+            manual_path.write_text(body.rstrip("\n") + "\n\n" + "\n".join(added) + "\n", encoding="utf-8")
+        if manual_path.is_file():
+            candidates.append(manual_path)
+
     if scan:
         # Canonical evidence first, so a run that names nothing still reads what the author left:
         # additional technical data at report.csv, annotated reports next to the report they answer.
         add([root / "report.csv"])
         reviews = root / "reviews"
-        if reviews.is_dir():
-            add(sorted(p for p in reviews.rglob("*") if p.is_file() and ANNOTATED_RE.match(p.name)))
+        if chain_dir.is_dir() and not chain_new:
+            # A new chain is a different document: an annotated report of the previous one answers
+            # questions this review is not asking. Only what the user named is read.
+            add(sorted(p for p in chain_dir.rglob("*") if p.is_file() and ANNOTATED_RE.match(p.name)))
+            # Statements typed in an earlier cycle stay on the record: a decision, once written down
+            # and signed, is not re-asked every iteration.
+            add(sorted(p for p in chain_dir.glob("spec-comments-*.md") if p.is_file()))
         for scan_dir in scan_dirs:
             directory = (root / scan_dir) if not Path(scan_dir).is_absolute() else Path(scan_dir)
             if directory.is_dir():
@@ -475,9 +691,14 @@ def main(argv):
         "unattributed": [],
         "injection_suspects": [],
         "previous_reviews": [],
+        "chain": 0,
+        "chain_dir": None,
+        "new_chain": bool(chain_new),
         "baseline": None,
         "open_questions": [],
         "answer_summary": {},
+        "manual_statements": [],
+        "comments_file": None,
         "blocking": False,
     }
 
@@ -488,17 +709,30 @@ def main(argv):
             found = re.search(r"Iteration_(\d+)", path.name)
             return int(found.group(1)) if found else 0
 
+        # Chains: `reviews/chain-<n>/` holds the line of work that started at archive n, and the flat
+        # `reviews/` is the first chain. A report from another chain is about another document, so it
+        # is neither a baseline nor a source of questions.
+        manifest["chain"] = chain
+        manifest["chain_dir"] = str(chain_dir)
+        manifest["new_chain"] = chain_new
+
         # Two reports are never a baseline: an annotated report is an input of its own (its name also
         # matches the report pattern), and the report of the iteration under review already exists when
         # a previous run was abandoned - a delta against itself would close every finding.
         current = 0
         match = re.search(r"-(\d+)\.md$", doc.name)
         if resolved_from is not None and match:
-            current = int(match.group(1))
-        found_reviews = sorted(
-            p for p in reviews.glob("spec-*.issues-Iteration_*.md")
-            if not p.name.endswith("_answers.md") and (current == 0 or iteration_of(p) < current)
-        )
+            archive_n = int(match.group(1))
+            # Iteration is counted inside the chain, not over the whole workspace history.
+            current = archive_n - chain + 1 if chain else archive_n
+        if chain_new:
+            # Nothing earlier belongs to this document: it is iteration 1 of a new chain.
+            found_reviews = []
+        else:
+            found_reviews = sorted(
+                p for p in chain_dir.glob("spec-*.issues-Iteration_*.md")
+                if not p.name.endswith("_answers.md") and (current == 0 or iteration_of(p) < current)
+            )
         manifest["previous_reviews"] = sorted(p.name for p in found_reviews)
         if found_reviews:
             # The report the answers came from: the newest one before the iteration under review.
@@ -557,7 +791,11 @@ def main(argv):
                 manifest["injection_suspects"].append(
                     {"path": path.name, "line": number, "text": line.strip()[:160]}
                 )
-        if kind == "answers-csv":
+        if kind == "manual-statements":
+            rows = parse_manual(path, text)
+            entry["reason"] = f"{len(rows)} statement(s) typed by the requester"
+            manifest["answers"] += rows
+        elif kind == "answers-csv":
             rows, why = parse_csv(path, text)
             if rows:
                 entry["reason"] = why
@@ -612,7 +850,9 @@ def main(argv):
     for answer in manifest["answers"]:
         fid = answer.get("finding_id")
         if fid in buckets:
-            buckets[fid].append({**answer, "matched_by": "id"})
+            # A statement typed in the chat names its finding outright: no subject guesswork.
+            kind = "manual" if answer.get("syntax") == "manual" else "id"
+            buckets[fid].append({**answer, "matched_by": kind})
     for orphan in manifest["orphans"]:
         got = subject_match(orphan["answer"], questions)
         if got:
@@ -648,7 +888,51 @@ def main(argv):
     manifest["open_questions"] = questions
     manifest["answer_summary"] = summary
 
+    if manual_path is not None and manual_path.is_file():
+        try:
+            manifest["comments_file"] = str(manual_path.relative_to(root))
+        except ValueError:
+            manifest["comments_file"] = str(manual_path)
+        wanted = {q["finding_id"] for q in questions}
+        recorded = parse_manual(manual_path, read_text(manual_path) or "")
+        for entry_out in recorded:
+            entry_out["recorded"] = True
+            # One shape for both origins: a recorded line and a refused statement carry `statement`.
+            entry_out["statement"] = entry_out["answer"]
+            # A statement may also decide a finding this cycle opened: absent from the baseline is
+            # not an error, it only means the id is new.
+            entry_out["in_baseline"] = entry_out["finding_id"] in wanted
+        manifest["manual_statements"] = recorded + manual_notes
+
     manifest["blocking"] = bool(manifest["missing"])
+    if window is not None:
+        # One window is one tool result of at most ~10 KB. This is the only safe way to read a long
+        # document in a chat that has a request-size ceiling.
+        text = read_text(doc) if doc.is_file() else ""
+        lines = text.splitlines()
+        plan = read_plan(outline(text), len(lines))
+        try:
+            n = int(window)
+        except ValueError:
+            n = 0
+        if not plan or not (1 <= n <= len(plan)):
+            print(f"FAIL --window {window} but the document has {len(plan)} windows", file=sys.stderr)
+            return 2
+        a, b = (int(x) for x in plan[n - 1]["lines"].split("-"))
+        body = "\n".join(f"{i}\t{lines[i - 1]}" for i in range(a, min(b, len(lines)) + 1))
+        print(json.dumps({"doc": manifest["doc"], "window": n, "of": len(plan),
+                          "lines": plan[n - 1]["lines"], "title": plan[n - 1]["title"],
+                          "text": body}, indent=2, ensure_ascii=False))
+        return 0
+    if outline_only:
+        # A 600-line document read whole is one tool result of forty kilobytes, and the next model
+        # request is the one that never answers. The map costs two and buys the window.
+        text = read_text(doc) if doc.is_file() else ""
+        sections = outline(text)
+        print(json.dumps({"doc": manifest["doc"], "outline": sections,
+                          "read_plan": read_plan(sections, len(text.splitlines())), "how": "read_file startLine/endLine per window"},
+                         indent=2, ensure_ascii=False))
+        return 0
     print(json.dumps(manifest, indent=2, ensure_ascii=False))
     return 0
 

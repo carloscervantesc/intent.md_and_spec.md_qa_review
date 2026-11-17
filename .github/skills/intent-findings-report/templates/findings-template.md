@@ -67,7 +67,7 @@ answer to unblock it. No praise, no restating the document.}}
 | B09 | Test data and environment | | |
 | B10 | Observability: how the effect is checked | | |
 | B11 | Open questions closed | | |
-| B12 | Metadata, ownership, approval, IDs | | |
+| B12 | Metadata, ownership and IDs (approval is a later process step) | | |
 
 ## 5. Findings
 

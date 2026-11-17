@@ -565,10 +565,322 @@ def test_open_questions() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_chain_isolation() -> None:
+    """A new chain is another document: no baseline, no inherited questions, no old answers."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-chain-"))
+    try:
+        reviews = root / "reviews"
+        (reviews / "chain-3").mkdir(parents=True)
+        # The first chain: a report with a question and an annotated copy answering it.
+        flat = (
+            "# Specification review\n"
+            "**Iteration:** 1\n\n"
+            "### SPEC-01 - Retention window contradicts itself\n"
+            "**Severity:** Blocking · **Block:** SP03\n\n"
+            "**Question to the author**\n\n"
+            "1. Is the retention window 90 days or 30 days?\n\n"
+            "**Close by:** Finance / 2026-11-20\n"
+        )
+        (reviews / "spec-2026-11-16.issues-Iteration_1.md").write_text(flat)
+        (reviews / "spec-2026-11-16.issues-Iteration_1_answers.md").write_text(
+            flat.replace(
+                "1. Is the retention window 90 days or 30 days?",
+                "1. Is the retention window 90 days or 30 days?\n"
+                "<!-- answer by Finance on 2026-11-16: 30 days -->",
+            )
+        )
+        # The second chain, already running: its own report, its own question.
+        second = flat.replace("90 days or 30 days", "5 years or 7 years")
+        (reviews / "chain-3" / "spec-2026-11-16.issues-Iteration_1.md").write_text(second)
+        (root / "spec-2026-11-16-4.md").write_text("# Spec - audit log\n\nThe audit log keeps 90 days.\n")
+
+        data, err = manifest(root, "--with-previous")
+        check("chain: manifest runs", data is not None, err)
+        if data is None:
+            return
+        check("chain: the newest chain is the active one", data.get("chain") == 3, str(data.get("chain")))
+        check(
+            "chain: only the chain's own reports are read as previous",
+            data["previous_reviews"] == ["spec-2026-11-16.issues-Iteration_1.md"]
+            and data["baseline"] == "spec-2026-11-16.issues-Iteration_1.md",
+            str(data["previous_reviews"]) + " / " + str(data["baseline"]),
+        )
+        check(
+            "chain: the question inherited is the chain's, not the first chain's",
+            len(data["open_questions"]) == 1
+            and "5 years or 7 years" in data["open_questions"][0]["question"],
+            str([q["question"] for q in data["open_questions"]]),
+        )
+        check(
+            "chain: the first chain's annotated report is not pulled in",
+            all("_answers" not in i["path"] for i in data["inputs"]),
+            str([i["path"] for i in data["inputs"]]),
+        )
+
+        fresh, err = manifest(root, "--with-previous", "--new")
+        check("chain: --new manifest runs", fresh is not None, err)
+        if fresh is None:
+            return
+        check("chain: --new has no baseline", fresh["baseline"] is None, str(fresh["baseline"]))
+        check("chain: --new inherits no previous report", fresh["previous_reviews"] == [], str(fresh["previous_reviews"]))
+        check("chain: --new is flagged", fresh["new_chain"] is True)
+        check(
+            "chain: --new asks no inherited question",
+            fresh["open_questions"] == [] and fresh["answer_summary"].get("questions", 0) == 0,
+            str(fresh["open_questions"]),
+        )
+        check(
+            "chain: --new reads nothing from reviews/ unless it was named",
+            fresh["inputs"] == [] or all("reviews" not in i["path"] for i in fresh["inputs"]),
+            str([i["path"] for i in fresh["inputs"]]),
+        )
+
+        named, err = manifest(root, "--with-previous", "--new", "--input", str(reviews / "spec-2026-11-16.issues-Iteration_1_answers.md"))
+        check("chain: --new still reads a file the user names", named is not None and len(named["inputs"]) == 1, err)
+        if named is not None:
+            check(
+                "chain: a named file is read even with --new",
+                named["inputs"][0]["type"] == "annotated-review" and named["inputs"][0]["used"] is True,
+                str(named["inputs"]),
+            )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_manual_statements() -> None:
+    """`--comment` decides a finding from the chat, and the report cites the line it wrote."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-comments-"))
+    try:
+        (root / "reviews").mkdir()
+        (root / "spec.md").write_text(
+            "# Spec\n\nRF-1 The export runs nightly at 02:00 UTC. Approval by Finance is required before release.\n"
+        )
+        baseline = (
+            "# Specification review\n"
+            "**Iteration:** 1\n\n"
+            "## 5. Findings\n\n"
+            "### SPEC-01 - Approval is required and nobody is named\n"
+            "**Severity:** Blocking - **Block:** SP01\n\n"
+            "**Question to the author** who approves, and does approval gate the build?\n\n"
+            "**Close by:** Finance / 2026-11-20\n\n"
+            "### SPEC-02 - The retry schedule names no attempt count\n"
+            "**Severity:** Important - **Block:** SP05\n\n"
+            "**Question to the author** how many attempts, and how far apart?\n\n"
+            "**Close by:** Ops / 2026-11-20\n"
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1.md").write_text(baseline)
+
+        data, err = manifest(
+            root,
+            "--with-previous",
+            "--comment",
+            "SP01 approval not required",
+            "--comment",
+            "no id at all",
+            "--author",
+            "Carlos",
+            "--date",
+            "2026-11-17",
+        )
+        check("comment: the manifest runs", data is not None, err)
+        if data is None:
+            return
+
+        statements = data.get("manual_statements") or []
+        recorded = [s for s in statements if s.get("recorded")]
+        refused = [s for s in statements if not s.get("recorded")]
+        check(
+            "comment: the short id SP01 is the finding SPEC-01",
+            len(recorded) == 1 and recorded[0]["finding_id"] == "SPEC-01",
+            str(statements),
+        )
+        check(
+            "comment: the statement, the signer and the date are kept",
+            bool(recorded)
+            and recorded[0]["answer"] == "approval not required"
+            and recorded[0]["author"] == "Carlos"
+            and recorded[0]["date"] == "2026-11-17",
+            str(recorded),
+        )
+        check(
+            "comment: the statement is recorded in reviews/ with a citable line",
+            bool(recorded) and recorded[0]["line"] > 0
+            and data.get("comments_file") == "reviews/spec-comments-2026-11-17.md",
+            str(data.get("comments_file")),
+        )
+        written = root / "reviews" / "spec-comments-2026-11-17.md"
+        check(
+            "comment: the line a reviewer can cite exists in that file",
+            written.is_file()
+            and f"- **SPEC-01** | approval not required | Carlos | 2026-11-17" in written.read_text(),
+            written.read_text() if written.is_file() else "missing",
+        )
+        check(
+            "comment: a statement with no id is refused and says why",
+            len(refused) == 1 and "needs an id" in refused[0]["reason"],
+            str(refused),
+        )
+
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        q1 = questions.get("SPEC-01", {})
+        check(
+            "comment: the statement closes the question it names",
+            q1.get("status") == "answered"
+            and (q1.get("answers") or [{}])[0].get("matched_by") == "manual"
+            and (q1.get("answers") or [{}])[0].get("source") == "spec-comments-2026-11-17.md",
+            str(q1),
+        )
+        check(
+            "comment: the question it does not name stays open",
+            questions.get("SPEC-02", {}).get("status") == "still_open",
+            str(questions.get("SPEC-02")),
+        )
+
+        again, err = manifest(
+            root, "--with-previous", "--comment", "SP01 approval not required", "--author", "Carlos", "--date", "2026-11-17"
+        )
+        check("comment: a second run with the same statement still runs", again is not None, err)
+        if again is not None:
+            check(
+                "comment: the same statement is never written twice",
+                written.read_text().count("approval not required") == 1
+                and len([a for a in again["answers"] if a.get("syntax") == "manual"]) == 1,
+                written.read_text(),
+            )
+            check(
+                "comment: the statement is read again with no flag on the next run",
+                (again["answer_summary"] or {}).get("answered") == 1,
+                str(again.get("answer_summary")),
+            )
+
+        # A shell drops the quotes: the same statement arrives as five separate arguments.
+        loose, err = manifest(root, "--with-previous", "--comment", "SP02", "three", "attempts", "--author", "Carlos", "--date", "2026-11-17")
+        check("comment: an unquoted statement keeps its words", loose is not None, err)
+        if loose is not None:
+            got = [s for s in loose["manual_statements"] if s.get("recorded") and s["finding_id"] == "SPEC-02"]
+            check(
+                "comment: the unquoted words are joined back into one statement",
+                len(got) == 1 and got[0]["answer"] == "three attempts",
+                str(loose["manual_statements"]),
+            )
+
+        # An id nobody wrote yet is recorded too: it may be a finding this cycle opened.
+        later, err = manifest(root, "--with-previous", "--comment", "sp7 keep the daily purge", "--date", "2026-11-17")
+        check("comment: a new id is accepted, not dropped", later is not None, err)
+        if later is not None:
+            fresh = [s for s in later["manual_statements"] if s.get("recorded") and s["finding_id"] == "SPEC-07"]
+            check(
+                "comment: an id absent from the baseline is marked, not refused",
+                len(fresh) == 1 and fresh[0]["in_baseline"] is False,
+                str(later["manual_statements"]),
+            )
+
+        # The report cites the statement line, and the verifier holds it to that.
+        line = recorded[0]["line"] if recorded else 5
+        register = (
+            "| ID | Question | Answer used | Source | Effect |\n"
+            "|---|---|---|---|---|\n"
+            f"| SPEC-01 | who approves? | approval not required | spec-comments-2026-11-17.md (l.{line}) | not a defect |\n"
+        )
+        table = (
+            "| File | Type | Lines | sha256 | What it settled |\n"
+            "|---|---|---|---|---|\n"
+            "| spec-comments-2026-11-17.md | manual statements | 5 | a1b2c3d4e5f6 | SPEC-01 approval |\n"
+        )
+        # A report file name carries the iteration: written outside reviews/ so the baseline stays.
+        (root / "out").mkdir()
+        out = root / "out" / "spec-2026-11-16.issues-Iteration_1.md"
+        source = root / "spec.md"
+        out.write_text(
+            report(register=register, inputs_line="`spec-comments-2026-11-17.md` (manual statements)", inputs_table=table)
+        )
+        code, text = verify(str(out), str(source), "--input", str(written))
+        check("comment: the report may cite the statement line", code == 0, text)
+        code, text = verify(str(out), str(source))
+        check(
+            "comment: citing a statement file that was not passed fails",
+            code == 1 and "was not given to the review" in text,
+            text,
+        )
+
+        # A statement that contradicts a signed answer is a conflict, not a silent overwrite.
+        annotated = baseline.replace(
+            "**Question to the author** who approves, and does approval gate the build?",
+            "**Question to the author** who approves, and does approval gate the build?\n"
+            "<!-- answer by Finance on 2026-11-16: Finance signs, and approval gates the release -->",
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1_answers.md").write_text(annotated)
+        clash, err = manifest(root, "--with-previous", "--comment", "SP01 approval not required", "--date", "2026-11-17")
+        check("comment: a contradicting statement is a conflict", clash is not None, err)
+        if clash is not None:
+            check(
+                "comment: the conflict names the finding and both readings",
+                any(c["finding_id"] == "SPEC-01" and len(c["answers"]) == 2 for c in clash["conflicts"]),
+                str(clash["conflicts"]),
+            )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+
+def test_outline() -> None:
+    """The map the agent reads first: sections with their line ranges, fences ignored."""
+    root = Path(tempfile.mkdtemp(prefix="outline-spec-"))
+    (root / "spec.md").write_text(
+        "# Title\n"
+        "intro line\n"
+        "## A\n"
+        "a1\n"
+        "a2\n"
+        "```\n"
+        "# not a heading, it is inside a fence\n"
+        "```\n"
+        "### B\n"
+        "b1\n"
+        "## C\n"
+        "c1\n"
+    )
+    data, err = manifest(root, "--outline")
+    check("outline parses", data is not None, err[:120])
+    if not data:
+        return
+    titles = [s["title"] for s in data["outline"]]
+    check("outline lists the real headings", titles == ["Title", "A", "B", "C"], str(titles))
+    check("outline ignores a heading inside a fence", "# not a heading" not in " ".join(titles))
+    ranges = {s["title"]: (s["line"], s["to"]) for s in data["outline"]}
+    check("outline gives A the lines it owns", ranges.get("A") == (3, 8), str(ranges.get("A")))
+    check("outline closes the last section at the end of the file", ranges.get("C") == (11, 12), str(ranges.get("C")))
+    plan = data["read_plan"]
+    check("read plan starts at line 1", bool(plan) and plan[0]["lines"].startswith("1-"), str(plan[:1]))
+    check("read plan ends at the last line", bool(plan) and plan[-1]["lines"].endswith("-12"), str(plan[-1:]))
+    check("outline output stays small", len(json.dumps(data)) < 4000, str(len(json.dumps(data))))
+
+
+def test_window() -> None:
+    """A window is the unit of reading: bounded, numbered, and it refuses to invent one."""
+    root = Path(tempfile.mkdtemp(prefix="window-spec-"))
+    body = "# Title\n" + "".join(f"line {i}\n" for i in range(2, 401))
+    (root / "spec.md").write_text(body)
+    data, err = manifest(root, "--window", "1")
+    check("window 1 reads", data is not None, err[:120])
+    if data:
+        check("window 1 starts at line 1", data["lines"].startswith("1-"), data["lines"])
+        check("window text is numbered", data["text"].splitlines()[0].startswith("1\t"), data["text"][:40])
+        check("window stays under 11 KB", len(data["text"]) < 11000, str(len(data["text"])))
+        check("window names how many there are", data["of"] >= 3, str(data["of"]))
+    over = subprocess.run([PY, str(INPUTS), "--root", str(root), "--window", "999"],
+                          capture_output=True, text=True)
+    check("a window past the end fails", over.returncode == 2 and "FAIL --window 999" in over.stderr,
+          over.stderr[:80])
+
 def main() -> int:
     test_manifest()
     test_doc_after_archival()
     test_open_questions()
+    test_chain_isolation()
+    test_manual_statements()
+    test_outline()
+    test_window()
     test_verify()
     print(f"\n{passed} passed, {failed} failed")
     return 0 if failed == 0 else 1

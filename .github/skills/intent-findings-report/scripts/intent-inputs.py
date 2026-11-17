@@ -9,6 +9,7 @@ the reviewer never has to guess which comment belongs to which question.
 Usage
     python3 intent-inputs.py [--root DIR] [--doc intent.md] [--with-previous]
                              [--no-scan] [--scan-dir DIR] [--input PATH]...
+                             [--comment "B01 <statement>"]... [--author NAME] [--date YYYY-MM-DD]
 
     --root       workspace root (default: current directory)
     --doc        the reviewed document, relative to --root (default: intent.md)
@@ -16,12 +17,18 @@ Usage
     --with-previous  also read the newest report in reviews/
     --scan-dir   an extra folder to read as well (repeatable by calling the flag again)
     --no-scan    read only what --input names
+    --comment    one statement from the requester deciding a finding: "<id> <text>". The id may be
+                 INT-01, int1, I-1 or B01 (the block it belongs to) - it is normalised to INT-nn.
+                 Recorded in reviews/intent-comments-YYYY-MM-DD.md and read as a signed answer.
+    --author     who signs the statement (default: the account running the script, marked "(chat)")
+    --date       the day that signs it (default: today)
 
 Canonical evidence, picked up without being named, when the default scan is on:
 
     report.csv                  additional technical data (a CSV without answer columns is read as
                                 reference data, not as answers)
     reviews/<report>_answers.md  an earlier report with the answers written between the lines
+    reviews/intent-comments-*.md  statements typed by the requester with --comment
 
 The JSON object has these keys:
 
@@ -40,6 +47,9 @@ The JSON object has these keys:
     unattributed[]     answers with no author and no date: read them, never let them decide
     injection_suspects[]  lines in an input that try to give the reviewer orders
     previous_reviews[] paths of earlier reports of this document found in reviews/
+    manual_statements[]  statements of this run and of the comments file: {"finding_id", "statement",
+                       "author", "date", "recorded", "in_baseline", ...}
+    comments_file      the reviews/intent-comments-YYYY-MM-DD.md the statements were written to
 
 Exit code 0 whenever the manifest could be built (including when files are missing: read
 `missing` and `blocking`), 2 only for a usage error.
@@ -55,6 +65,16 @@ A bare `<!-- answer: ... -->` attaches to the nearest `### INT-nn` heading above
 that carries its own `INT-nn` wins over the heading. Anything else is an orphan: commentary the
 reviewer may read but must not attribute to a question.
 
+A manual statement is one line of `reviews/intent-comments-YYYY-MM-DD.md`:
+
+    - **INT-01** | approval not required | ccervantes (chat) | 2026-11-17
+
+Left to right: the finding it decides, the statement itself, who said it, and when. A statement may
+contain a pipe - the signature is always the last two fields. The file is an input of its own, so a
+statement recorded today is still read on the next run, and it is what the report cites as its
+source. Statements carry an author and a date by construction, which is what makes them able to
+close a finding; `--comment` with no id is refused and reported in `manual_statements`.
+
 CSV sheets are read when they have an id column (`finding_id`, `question_id`, `id`, `issue`) and an
 answer column (`answer`, `comment`, `response`, `resolution`, `reply`, `comentario`, `respuesta`);
 `author`/`by` and `date`/`fecha` are used when present.
@@ -65,8 +85,10 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 TEXT_SUFFIXES = {".md", ".markdown", ".txt", ".csv", ".json", ".yaml", ".yml"}
@@ -77,6 +99,16 @@ PREVIOUS_RE = re.compile(
 # lines: reviews/<report>_answers.md. That file is the review's evidence, not a new report.
 ANNOTATED_RE = re.compile(
     r"^(?:intent|spec)-\d{4}-\d{2}-\d{2}\.(?:findings|issues)-Iteration_\d+_answers\.md$"
+)
+# A statement typed in the chat is written here, one line per statement, and cited by the report.
+MANUAL_FILE_RE = re.compile(r"^intent-comments-\d{4}-\d{2}-\d{2}\.md$")
+MANUAL_LINE = re.compile(r"^-\s+\*\*(?P<id>INT-\d+)\*\*\s*\|(?P<rest>.*)$")
+# INT-1, int1, I-1 and B01 (the block a finding sits in) are the same finding: people type the block.
+STATEMENT_ID = re.compile(r"\b(?:int|b)[-_ ]?(\d{1,3})\b", re.I)
+COMMENT_PREAMBLE = (
+    "# Manual statements for intent.md\n\n"
+    "Typed by the requester with `--comment`: one line per statement, "
+    "`- **INT-nn** | statement | author | date`.\n\n"
 )
 REPORT_SHAPE = re.compile(r"^(?:###\s+(?:INT|SPEC)-\d+|##\s*\d*\.?\s*(?:Verdict|Veredicto)|\*\*Verdict:\*\*)", re.M)
 FINDING_HEAD = re.compile(r"^###\s+((?:INT|SPEC)-\d+)\b")
@@ -129,6 +161,8 @@ def classify(path: Path, text: str):
         return "annotated-review", True, "earlier report with the answers written between the lines"
     if PREVIOUS_RE.match(name):
         return "previous-review", True, "earlier report of this review"
+    if MANUAL_FILE_RE.match(name):
+        return "manual-statements", True, "statements typed by the requester, signed and dated"
     if REPORT_SHAPE.search(text):
         return "report-example", True, "example of the report shape"
     if path.suffix.lower() == ".csv":
@@ -288,6 +322,45 @@ def distinctive(text: str) -> set:
     return {w for w in words if len(w) > 2 and w not in STOPWORDS and not w.isdigit()}
 
 
+def parse_manual(path: Path, text: str):
+    """Read `- **INT-nn** | statement | author | date` lines back into answers."""
+    out = []
+    for number, line in enumerate(text.splitlines(), 1):
+        found = MANUAL_LINE.match(line.strip())
+        if not found:
+            continue
+        parts = [part.strip() for part in found.group("rest").split("|")]
+        if len(parts) < 3:
+            continue
+        # The statement itself may contain a pipe: the signature is the last two fields.
+        statement = " | ".join(parts[:-2]).strip()
+        author, when = parts[-2], parts[-1]
+        if not statement:
+            continue
+        out.append(
+            {
+                "finding_id": found.group("id"),
+                "line": number,
+                "answer": statement,
+                "author": author or None,
+                "date": when if re.fullmatch(r"\d{4}-\d{2}-\d{2}", when) else None,
+                "source": path.name,
+                "syntax": "manual",
+            }
+        )
+    return out
+
+
+def split_statement(raw: str):
+    """`B01 approval no required` -> ("INT-01", "approval no required")."""
+    found = STATEMENT_ID.search(raw)
+    if not found:
+        return None, raw.strip()
+    finding_id = f"INT-{int(found.group(1)):02d}"
+    statement = (raw[: found.start()] + raw[found.end() :]).strip(" \t:-,;")
+    return finding_id, statement
+
+
 def parse_open_questions(path: Path, text: str):
     """Return the questions a report left open: [{finding_id, question, line, severity, close_by}]."""
     found, closes = [], {}
@@ -372,17 +445,71 @@ def subject_match(text: str, questions):
     return fid, best
 
 
+HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+
+
+def outline(text: str) -> list[dict]:
+    """Every heading with the line range it owns. The map a reader needs before it reads."""
+    lines = text.splitlines()
+    marks: list[tuple[int, int, str]] = []
+    fenced = False
+    for n, line in enumerate(lines, 1):
+        bare = line.lstrip()
+        if bare.startswith("```") or bare.startswith("~~~"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        m = HEADING.match(line)
+        if m:
+            marks.append((n, len(m.group(1)), m.group(2).strip()))
+    out: list[dict] = []
+    for k, (n, level, title) in enumerate(marks):
+        end = marks[k + 1][0] - 1 if k + 1 < len(marks) else len(lines)
+        out.append({"line": n, "to": end, "level": level, "title": title})
+    return out
+
+
+def read_plan(sections: list[dict], total: int = 0, budget: int = 150) -> list[dict]:
+    """Windows of at most `budget` lines: neighbour sections are merged, a long one is cut."""
+    plan: list[dict] = []
+    if not sections:
+        sections = [{"line": 1, "to": total, "title": "(no headings)"}] if total else []
+    cur_start = cur_end = None
+    cur_title = ""
+    for sec in sections:
+        start, end = sec["line"], sec["to"]
+        while start <= end:
+            chunk_end = min(end, start + budget - 1)
+            if cur_start is None:
+                cur_start, cur_end, cur_title = start, chunk_end, sec["title"]
+            elif chunk_end - cur_start + 1 <= budget:
+                cur_end = chunk_end
+            else:
+                plan.append({"lines": f"{cur_start}-{cur_end}", "title": cur_title})
+                cur_start, cur_end, cur_title = start, chunk_end, sec["title"]
+            start = chunk_end + 1
+    if cur_start is not None:
+        plan.append({"lines": f"{cur_start}-{cur_end}", "title": cur_title})
+    return plan
+
+
 def main(argv):
     root = Path.cwd()
     doc_rel = "intent.md"
     scan_dirs: list[str] = []
     scan = True
+    outline_only = False
+    window = None
     with_previous = False
     given: list[str] = []
+    comments: list[str] = []
+    author = f"{os.environ.get('USER') or 'requester'} (chat)"
+    day = date.today().isoformat()
     i = 1
     while i < len(argv):
         arg = argv[i]
-        if arg in ("--root", "--doc", "--scan-dir", "--input"):
+        if arg in ("--root", "--doc", "--scan-dir", "--input", "--window", "--comment", "--author", "--date"):
             if i + 1 >= len(argv):
                 print(f"FAIL {arg} needs a value", file=sys.stderr)
                 return 2
@@ -393,6 +520,24 @@ def main(argv):
                 doc_rel = value
             elif arg == "--scan-dir":
                 scan_dirs.append(value)
+            elif arg == "--comment":
+                # A shell drops the quotes the user typed: `--comment B01 approval not required`
+                # arrives as five arguments. Keep the plain words, stop at the next flag or path.
+                while (
+                    i + 2 < len(argv)
+                    and not argv[i + 2].startswith("-")
+                    and "." not in argv[i + 2]
+                    and "/" not in argv[i + 2]
+                ):
+                    value += " " + argv[i + 2]
+                    i += 1
+                comments.append(value)
+            elif arg == "--author":
+                author = value
+            elif arg == "--date":
+                day = value
+            elif arg == "--window":
+                window = value
             else:
                 given.append(value)
             i += 2
@@ -403,6 +548,10 @@ def main(argv):
             continue
         if arg == "--with-previous":
             with_previous = True
+            i += 1
+            continue
+        if arg == "--outline":
+            outline_only = True
             i += 1
             continue
         if arg in ("-h", "--help"):
@@ -421,6 +570,42 @@ def main(argv):
                 candidates.append(p)
 
     candidates = [resolve(p) for p in given]
+
+    # A statement typed in the chat is evidence too. Record it before anything is read, then let the
+    # normal path pick it up: the file is the citation, the citation is what closes a finding.
+    manual_path = None
+    manual_notes: list[dict] = []
+    if comments:
+        reviews_dir = root / "reviews"
+        reviews_dir.mkdir(parents=True, exist_ok=True)
+        manual_path = reviews_dir / f"intent-comments-{day}.md"
+        existing = read_text(manual_path) or ""
+        body = existing if existing else COMMENT_PREAMBLE
+        added = []
+        for raw in comments:
+            finding_id, statement = split_statement(raw)
+            if not finding_id or not statement:
+                manual_notes.append(
+                    {
+                        "finding_id": None,
+                        "statement": raw.strip(),
+                        "author": author,
+                        "date": day,
+                        "source": None,
+                        "line": None,
+                        "recorded": False,
+                        "reason": 'a statement needs an id and a text: --comment "B01 <what decides it>"',
+                    }
+                )
+                continue
+            line = f"- **{finding_id}** | {statement} | {author} | {day}"
+            if line not in body and line not in added:
+                added.append(line)
+        if added:
+            manual_path.write_text(body.rstrip("\n") + "\n\n" + "\n".join(added) + "\n", encoding="utf-8")
+        if manual_path.is_file():
+            candidates.append(manual_path)
+
     if scan:
         # Canonical evidence first, so a run that names nothing still reads what the author left:
         # additional technical data at report.csv, annotated reports next to the report they answer.
@@ -428,6 +613,9 @@ def main(argv):
         reviews = root / "reviews"
         if reviews.is_dir():
             add(sorted(p for p in reviews.rglob("*") if p.is_file() and ANNOTATED_RE.match(p.name)))
+            # Statements typed in an earlier cycle stay on the record: a decision, once written down
+            # and signed, is not re-asked every iteration.
+            add(sorted(p for p in reviews.glob("intent-comments-*.md") if p.is_file()))
         for scan_dir in scan_dirs:
             directory = (root / scan_dir) if not Path(scan_dir).is_absolute() else Path(scan_dir)
             if directory.is_dir():
@@ -468,6 +656,8 @@ def main(argv):
         "unattributed": [],
         "injection_suspects": [],
         "previous_reviews": [],
+        "manual_statements": [],
+        "comments_file": None,
         "baseline": None,
         "open_questions": [],
         "answer_summary": {},
@@ -546,7 +736,11 @@ def main(argv):
                 manifest["injection_suspects"].append(
                     {"path": path.name, "line": number, "text": line.strip()[:160]}
                 )
-        if kind == "answers-csv":
+        if kind == "manual-statements":
+            rows = parse_manual(path, text)
+            entry["reason"] = f"{len(rows)} statement(s) typed by the requester"
+            manifest["answers"] += rows
+        elif kind == "answers-csv":
             rows, why = parse_csv(path, text)
             if rows:
                 entry["reason"] = why
@@ -601,7 +795,9 @@ def main(argv):
     for answer in manifest["answers"]:
         fid = answer.get("finding_id")
         if fid in buckets:
-            buckets[fid].append({**answer, "matched_by": "id"})
+            # A statement typed in the chat names its finding outright: no subject guesswork.
+            kind = "manual" if answer.get("syntax") == "manual" else "id"
+            buckets[fid].append({**answer, "matched_by": kind})
     for orphan in manifest["orphans"]:
         got = subject_match(orphan["answer"], questions)
         if got:
@@ -637,7 +833,51 @@ def main(argv):
     manifest["open_questions"] = questions
     manifest["answer_summary"] = summary
 
+    if manual_path is not None and manual_path.is_file():
+        try:
+            manifest["comments_file"] = str(manual_path.relative_to(root))
+        except ValueError:
+            manifest["comments_file"] = str(manual_path)
+        wanted = {q["finding_id"] for q in questions}
+        recorded = parse_manual(manual_path, read_text(manual_path) or "")
+        for entry_out in recorded:
+            entry_out["recorded"] = True
+            # One shape for both origins: a recorded line and a refused statement carry `statement`.
+            entry_out["statement"] = entry_out["answer"]
+            # A statement may also decide a finding this cycle opened: absent from the baseline is
+            # not an error, it only means the id is new.
+            entry_out["in_baseline"] = entry_out["finding_id"] in wanted
+        manifest["manual_statements"] = recorded + manual_notes
+
     manifest["blocking"] = bool(manifest["missing"])
+    if window is not None:
+        # One window is one tool result of at most ~10 KB. This is the only safe way to read a long
+        # document in a chat that has a request-size ceiling.
+        text = read_text(doc) if doc.is_file() else ""
+        lines = text.splitlines()
+        plan = read_plan(outline(text), len(lines))
+        try:
+            n = int(window)
+        except ValueError:
+            n = 0
+        if not plan or not (1 <= n <= len(plan)):
+            print(f"FAIL --window {window} but the document has {len(plan)} windows", file=sys.stderr)
+            return 2
+        a, b = (int(x) for x in plan[n - 1]["lines"].split("-"))
+        body = "\n".join(f"{i}\t{lines[i - 1]}" for i in range(a, min(b, len(lines)) + 1))
+        print(json.dumps({"doc": manifest["doc"], "window": n, "of": len(plan),
+                          "lines": plan[n - 1]["lines"], "title": plan[n - 1]["title"],
+                          "text": body}, indent=2, ensure_ascii=False))
+        return 0
+    if outline_only:
+        # A 600-line document read whole is one tool result of forty kilobytes, and the next model
+        # request is the one that never answers. The map costs two and buys the window.
+        text = read_text(doc) if doc.is_file() else ""
+        sections = outline(text)
+        print(json.dumps({"doc": manifest["doc"], "outline": sections,
+                          "read_plan": read_plan(sections, len(text.splitlines())), "how": "read_file startLine/endLine per window"},
+                         indent=2, ensure_ascii=False))
+        return 0
     print(json.dumps(manifest, indent=2, ensure_ascii=False))
     return 0
 

@@ -28,8 +28,8 @@ The `plan.md` reviewer is the next sibling; this kit stops at the spec.
     intent-testability-probe/SKILL.md    Q1 who observes / Q2 data / Q3 value / Q4 mutation
     intent-findings-report/SKILL.md      severity, naming, iteration, self-check
       templates/findings-template.md
-      scripts/intent-iteration.py        resolves MISSING / UNCHANGED / NEW and archives the file
-      scripts/selftest-iteration.py      walks the three states and gates each report
+      scripts/intent-iteration.py        resolves MISSING / UNCHANGED / NEW / INTERRUPTED, archives
+      scripts/selftest-iteration.py      walks every state and gates each report
       scripts/intent-inputs.py           reads the evidence files: answers, conflicts, refused files
       scripts/selftest-inputs.py         walks the evidence path and the register checks
     spec-review-checklist/SKILL.md       the fourteen blocks SP01..SP14
@@ -37,8 +37,8 @@ The `plan.md` reviewer is the next sibling; this kit stops at the spec.
     spec-traceability-matrix/SKILL.md    REQ → FR → AC → TC, orphans and lost requirements
     spec-findings-report/SKILL.md        report format, registry, the finding block
       templates/issues-template.md
-      scripts/spec-iteration.py          resolves MISSING / UNCHANGED / NEW and archives the file
-      scripts/selftest-spec-iteration.py walks the three states and gates each report
+      scripts/spec-iteration.py          resolves MISSING / UNCHANGED / NEW / INTERRUPTED, archives
+      scripts/selftest-spec-iteration.py walks every state and gates each report
       scripts/spec-inputs.py             reads the evidence files: answers, screenshots, refused files
       scripts/selftest-spec-inputs.py    walks the evidence path and the register checks
       scripts/verify-report.py           mechanical checks on a finished report
@@ -100,6 +100,35 @@ Then read the answer: verdict (`FAIL` / `CONDITIONAL` / `PASS`), report path, fi
 the two verification numbers (findings, verifier failures). `FAIL` with one Blocking finding is the
 expected answer when `intent.md` is missing or identical to the last archive - fix the file and send the
 same prompt again.
+
+#### Deciding a finding from the chat (`--comment`)
+
+Same mechanism as the spec kit, on the intent side: a finding often needs a decision, not a document.
+
+```
+Review intent.md --comment B01 approval no required
+```
+
+The id may be typed as the **block** (`B01`), or as the finding (`INT-1`, `int1`, `INT-01`); it is
+normalised to `INT-nn`. One `--comment "<id> <statement>"` per decision, repeatable, quoted or not -
+the script rejoins the words a shell split. `intent-inputs.py` appends one line per statement to
+`reviews/intent-comments-YYYY-MM-DD.md`:
+
+```
+- **INT-01** | approval no required | ccervantes (chat) | 2026-11-17
+```
+
+That line is the citation (`intent-comments-YYYY-MM-DD.md (l.5)`), the file goes into `Inputs
+reviewed`, and the answer register gets a row with its effect. The statement closes the question it
+names (`matched_by: manual`) and either confirms the finding - the fix goes into the suggested option -
+or settles it, in which case the finding is withdrawn quoting the statement. It never edits `intent.md`
+or an earlier report. The signature is stamped by the script (account marked `(chat)`, plus the date),
+because only an answer with an author and a date can withdraw a finding. A statement with no id is
+refused with a reason, and one naming a finding the earlier report never had is still recorded
+(`in_baseline: false`) - it may decide something this very review opened.
+
+Because the statements live in a file, they persist: every later run reads `reviews/intent-comments-*.md`
+again, so a decision made once is not asked again.
 
 #### Handing the agent more than one file
 
@@ -212,6 +241,40 @@ gave>` with `State: NEW`. It is for a deliberate second report (checklist change
 re-confirmation on record) - not a way to turn a `FAIL` into a `PASS`, and not something the agent
 decides by itself. A missing or empty `spec.md` stays a Blocking `MISSING`.
 
+#### Deciding a finding from the chat (`--comment`)
+
+A blocking finding often does not need a document: it needs a decision. Say it in the prompt and the
+review records it as a signed answer:
+
+```
+Review spec.md --comment SP01 approval not required
+```
+
+One `--comment "<id> <statement>"` per decision - repeat the flag for several. The id may be typed
+`SP01`, `SP-1`, `spec-1` or `SPEC-01`; it is normalised to `SPEC-nn`. `spec-inputs.py` appends one line
+per statement to `reviews/spec-comments-YYYY-MM-DD.md`:
+
+```
+- **SPEC-01** | approval not required | ccervantes (chat) | 2026-11-17
+```
+
+That line is the source the report cites (`spec-comments-YYYY-MM-DD.md (l.5)`), the file appears in
+section 2 `Inputs reviewed`, and the answer register gets a row with its effect - `confirmed` when the
+spec still contradicts the decision, `not a defect` when it settles the finding, which is then
+withdrawn. The signature is what makes it usable: the script stamps the account (marked `(chat)`) and
+the date, because only an answer with an author and a date can withdraw a finding. A statement with no
+id is refused with a reason instead of being guessed at, and a statement naming a finding the earlier
+report never had is still recorded - it may decide something this very review opened.
+
+Statements are files, so they survive: every later run reads `reviews/spec-comments-*.md` again and the
+decision stays on the record without being retyped. A statement that disagrees with an existing signed
+answer is reported as a conflict, with both texts, and you pick. `--author` and `--date` override the
+stamp for a decision that was taken earlier or by somebody else.
+
+The spec is still never edited by the agent - `--comment` changes the **report**, not `spec.md` - and
+the verifier enforces the citation: a register row pointing at the comments file fails unless that file
+was passed as `--input` and the line exists.
+
 #### Handing the spec agent more than one file
 
 The spec review takes the same inputs the intent review takes - any number of files, read for the
@@ -251,12 +314,15 @@ python3 .github/skills/spec-findings-report/scripts/spec-iteration.py   --date "
 # forced re-review of an unchanged document, on an explicit human request
 python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date "$(date +%F)" --force
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date "$(date +%F)" --force
+# a different piece of work: iteration 1 of a new chain (spec kit)
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date "$(date +%F)" --new
 ```
 
 | `state` | `review` | What the run writes |
 |---|---|---|
 | `MISSING` | `false` | a short FAIL report at `report`: one Blocking finding, the document is not at the root |
 | `UNCHANGED` | `false` | a short FAIL report at `report`: one Blocking finding, nothing changed since `last_iteration` |
+| `INTERRUPTED` | `true` | the full report for the archive the last run made (`last_archive`) and never reviewed - the answer was lost between the rename and the report |
 | `NEW` | `true` | the document is renamed to `<doc>-YYYY-MM-DD-<n>.md` and the full report goes to `report` |
 
 `report` is a field of the JSON, never a path composed by hand:
@@ -267,8 +333,8 @@ python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date
 | spec | `spec-YYYY-MM-DD-<n>.md` | `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md` |
 
 `<n>` is one more than every iteration the workspace already shows, archives and reports together, so a
-report that already exists is never overwritten. In a `NEW` run the archive and the report carry the
-same `<n>`. The document itself is never created and never restored by the reviewer: `spec.md` missing
+report that already exists is never overwritten. In a `NEW` run of the first chain the archive and the
+report carry the same `<n>` (see *A second, unrelated document* for the exception). The document itself is never created and never restored by the reviewer: `spec.md` missing
 is a `MISSING` run, not a reason to copy the example file.
 
 Both blocking states end the run: a second review of identical text produces an identical report, and a
@@ -282,6 +348,78 @@ says `**Forced:** yes - <reason>` next to `State: NEW`. It never converts a `MIS
 file to review), it never reuses a number, and the agent never chooses it because a document "should"
 have changed. In a normal run the line reads `**Forced:** no`.
 
+#### When the chat drops the answer (`INTERRUPTED`)
+
+A 60-page spec, four skills and twenty findings is a long request, and the chat client does fail on it:
+*"Sorry, no response was returned"*, *"recovered from a request error"*, an auto-retry that ends in
+silence. Nothing in the workspace is damaged - but a run can die **after** the resolver already renamed
+`spec.md`, which leaves an archive with no report and, on the next prompt, no `spec.md` at all.
+
+That is what `INTERRUPTED` is for. It is not `MISSING`: the resolver looks at the last archive, checks
+whether its report exists, and when it does not it returns `review: true` with the archive as the
+document under review and the iteration the archive already took. **Send the same prompt again** and the
+review continues - no file to copy back, no number spent, no duplicate archive:
+
+```
+"state": "INTERRUPTED", "review": true, "iteration": 1,
+"archive": "spec-2026-11-17-5.md",
+"report":  "reviews/chain-5/spec-2026-11-17.issues-Iteration_1.md"
+```
+Once that report exists the same query answers `MISSING` again, so the state is self-clearing: an
+archive is either waiting for its review or already reviewed.
+
+A second failure mode looks different and has the same cause: no error at all, the turn simply never
+finishes. Three retries of about fifty seconds each and the chat goes quiet. The request that carries the
+conversation is too big for the service to answer - and the biggest thing in it is what the agent read.
+
+Two mechanical rules now keep it small, and neither is left to the model's judgement:
+
+```bash
+python3 .../spec-inputs.py --outline    # every heading with the lines it owns, plus a read plan
+python3 .../spec-inputs.py --window 3   # one window, numbered, at most 150 lines (~10 KB)
+```
+
+The document is read window by window through the script, never with `read_file`/`cat` on the whole
+file; the agent's own instruction files and anything outside the workspace root are not read at all. In
+one turn of the run that died, the agent pulled 160 KB into the conversation - the whole spec three
+times, three skill files and the README - and the request that followed never came back.
+
+The second rule is about the chat, not the file: **a chat that has already failed keeps every tool result
+of the failed attempt**, so retrying inside it starts above the size that died. After a failed run, open
+a **new chat** and send the same prompt - `INTERRUPTED` makes that safe, because the new chat resumes the
+iteration the dead one never finished. Per-finding limits (twenty lines, two quotes of two lines, tables
+at fifteen rows) still apply: a report that repeats the document is a report nobody receives.
+
+#### A second, unrelated document (`--new`, spec kit)
+
+```
+Review spec.md --new
+```
+
+One workspace can hold several documents that do not continue each other: another feature, a rewrite
+that is not a draft of the same thing, a spec that belongs to a different intent. `--new` states that
+`spec.md` is a different document, so it is archived as usual and reviewed as **iteration 1 of a new
+chain** - never as iteration 9 of a history it is not part of.
+
+| | Normal run | `--new` |
+|---|---|---|
+| `iteration` | `1 + max` over the whole history | `1`, counted inside the chain |
+| `chain` | `0` (the first, flat chain) | the archive number the chain started at, e.g. `4` |
+| report | `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md` | same file name in `reviews/chain-<n>/` |
+| `previous_report` | the newest earlier report of this document | `null` |
+| earlier reviews, their `_answers.md`, `spec-comments-*.md` | read as inputs | not read: they answer questions about another document |
+| findings | continue the numbering | restart at `SPEC-01` |
+
+The chain is sticky: the next run without `--new` continues the newest chain (its reports live in the
+same folder, `previous_report` is read from there, and the delta is written against it), so two chains
+both own an `Iteration_1` and neither disturbs the other. `--comment` statements are filed next to the
+reports of their chain, and `State:` still says `NEW` because the file was new; `**Chain:** <n>` in the
+header says which line of work it joined. A `MISSING` run stays `MISSING` with the flag and is filed in
+`reviews/` - a blocked run never creates a chain folder.
+
+Only the spec kit has it today: the intent kit keeps one document per workspace, where a chain would
+mean a second `intent.md`.
+
 Each self-test walks the states in a throwaway workspace - including the forced run, the forced dry
 run and the missing/empty cases of both kits - and gates every report it writes:
 
@@ -289,6 +427,7 @@ run and the missing/empty cases of both kits - and gates every report it writes:
 python3 .github/skills/intent-findings-report/scripts/selftest-iteration.py         # exit 0
 python3 .github/skills/intent-findings-report/scripts/selftest-inputs.py            # exit 0
 python3 .github/skills/spec-findings-report/scripts/selftest-spec-iteration.py      # exit 0
+python3 .github/skills/spec-findings-report/scripts/selftest-spec-inputs.py         # exit 0
 ```
 
 `selftest-inputs.py` covers the evidence path: which file is read as what, answers attached to the
@@ -341,6 +480,10 @@ matching alone.
 ## Decision rules encoded in both kits
 
 - **FAIL** if any finding is `Blocking`; **CONDITIONAL** if only `Important`; **PASS** otherwise.
+- **Approval is a process step, never a finding.** Approved, approver, approval record and status
+  (`draft`, `ready`, `approved`) are decided after the review, by the people who read it, so a missing
+  approver - in `intent.md` or in `spec.md` - is not `Blocking`, not `Important` and not `Minor`. The
+  verdict follows the open decisions and the testable content, not the header's claim.
 - Open questions with no owner and no date are never a PASS - a decision delegated to the implementer is
   a gap.
 - Every finding quotes the document and maps to a block or a probe question; anything that maps to

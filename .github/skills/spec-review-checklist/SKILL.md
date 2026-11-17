@@ -16,13 +16,16 @@ pure UI spec, no money in a telemetry spec). A block that applies and is empty i
 
 ---
 
-## SP01 Identity, ownership and approval
+## SP01 Identity, ownership and traceability
 
-- PASS: specification ID, version, status, owner, **approver**, source intent/requirement link, last
-  updated, and what approval actually consisted of.
-- FAIL signals: "Approved for implementation" with no approver named or no evidence of approval; no link
-  to the intent it implements; version or status absent; a status of approved while open decisions remain.
-- The test: could a stranger find out *who* decided this is ready and *what* they saw?
+- PASS: specification ID, version, status, owner, source intent/requirement link, last updated.
+- FAIL signals: no link to the intent it implements; version or status absent; an ID that collides with
+  another document in the set.
+- **Out of scope - never a finding:** the approver, the approval mechanism, the approval record and the
+  status itself (`draft`, `ready`, `approved`). Approval is the process that runs *after* this review,
+  once the report is read and its options accepted; a document approved while decisions are open is
+  judged on the open decisions, not on the word "approved".
+- The test: could a stranger find the requirement this spec implements and cite it?
 
 ## SP02 Problem alignment and success measures
 
@@ -171,7 +174,8 @@ pure UI spec, no money in a telemetry spec). A block that applies and is empty i
    section and never became a requirement.
 7. **Rules that share a state or a clock** - write the pair and answer what happens to the second rule
    while the first is active (billing vs suspension, retry vs period start, discount vs proration).
-8. **Approval versus openness** - "approved" while decisions remain open is a finding in SP01 and SP14.
+8. **Open decisions versus the status line** - decisions left open is the finding (SP14); the word
+   "approved" in the header is not, because approval happens after this review.
 9. **Restated rules** - an AC that repeats an incomplete rule is not coverage; it is the same gap twice.
 
 ## What is NOT a defect in a specification (do not file these)

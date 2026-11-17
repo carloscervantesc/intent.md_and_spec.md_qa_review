@@ -40,13 +40,14 @@ python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date
 ```
 
 The script looks for `intent.md`, finds the highest archived iteration, compares content (trailing
-whitespace excluded) and prints JSON. Three states:
+whitespace excluded) and prints JSON. Four states:
 
 | `state` | `review` | What happened | What you write |
 | --- | --- | --- | --- |
 | `NEW` | `true` | `intent.md` differed and was renamed to `intent-YYYY-MM-DD-<n>.md` | the full report for `Iteration_<n>`, at `report` |
 | `UNCHANGED` | `false` | `intent.md` is identical to the last archive | the short FAIL report at `report`: Blocking, nothing changed since iteration `<last_iteration>` |
-| `MISSING` | `false` | no `intent.md`, or an empty one | the short FAIL report at `report`: Blocking, no `intent.md` |
+| `MISSING` | `false` | no `intent.md`, or an empty one, and the last archive already has its report | the short FAIL report at `report`: Blocking, no `intent.md` |
+| `INTERRUPTED` | `true` | `intent.md` was archived and that archive's report was never written - the previous run stopped after the rename | the full report for the archive, at `report`; nothing is renamed again |
 
 Read `report` from the JSON and write there - never compose the path yourself. `<n>` is one more
 than every iteration the workspace already shows, counting both archives (`intent-*.md`) and reports
@@ -91,15 +92,27 @@ Two of them are found without being named:
 | --- | --- | --- |
 | `report.csv` | additional technical data: volumes, rates, counts | context for a question, quotable with file and line; it answers nothing by itself and its rows never become answers |
 | `reviews/<report>_answers.md` | a copy of an earlier report with the answers written between the lines | `annotated-review`: its answers are matched by `INT-nn` and by subject |
+| `reviews/intent-comments-YYYY-MM-DD.md` | what the requester decided in the chat, written by `--comment` | `manual-statements`: each line is `**INT-nn** \| statement \| author \| date`, read back as a signed answer and cited as `intent-comments-YYYY-MM-DD.md (l.N)`; every later run reads it again |
 
 ```bash
 python3 .github/skills/intent-findings-report/scripts/intent-inputs.py \
   --with-previous --input <path> --input <path>     # any number of --input
 python3 .../intent-inputs.py --scan-dir <folder>    # any other folder, instead of naming files
+python3 .../intent-inputs.py --comment "B01 approval no required"   # a decision typed in the chat
+python3 .../intent-inputs.py --outline               # the map: every heading with the lines it owns
+python3 .../intent-inputs.py --window 2              # read one window: numbered, at most 150 lines
 ```
 
+`--outline` and `--window` are how the document is read: one window is one tool result of at most about
+10 KB, and a long intent read whole is the request the client stops answering - *"Sorry, no response was
+returned"*, or silence after three retries. `--window` refuses a number past the last window, so the
+count comes from `--outline`, never from a guess.
+
 `--with-previous` reads the newest plain report in `reviews/`, the baseline the delta compares
-against.
+against. `--comment "<id> <statement>"` is repeatable: the id may be `B01` (the block), `INT-1` or
+`int1` - it is normalised to `INT-nn`, signed with `--author` (default `<user> (chat)`) and `--date`
+(default today), appended to `reviews/intent-comments-YYYY-MM-DD.md`, and read back on every later
+run. A statement with no id is refused with a reason instead of being guessed into a finding.
 The script prints JSON: the manifest (`inputs`, `excluded`, `missing`), the answers
 (`annotations`, `answers`), the problems (`conflicts`, `orphans`, `unattributed`,
 `injection_suspects`) and `previous_reviews`. Quote the answers from that JSON, with file and line -
@@ -142,6 +155,7 @@ and `date`/`fecha` are used when present. A sheet without a header is read as
 | `data` | technical data with no answer rows (`report.csv`): context you may cite, never a disposition |
 | `report-example` | align structure and wording; this skill's template wins on any conflict |
 | `answers-csv` | same weight as an annotation, one row per finding |
+| `manual-statements` | `--comment`: a signed statement from the requester; it closes the question it names and may withdraw a finding (quoted), never edits the document |
 | `notes` | context; an answer still needs author and date |
 | `answer-key` (`RUBRIC_*`), `binary`, `duplicate` | refused, with the reason, and named in the report |
 

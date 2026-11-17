@@ -158,15 +158,19 @@ limits, or as good intentions?
 - Default severity: `Blocking` when the answer changes behavior, `Important` when it only changes
   wording.
 
-## B12 - Metadata, ownership, approval and IDs
+## B12 - Metadata, ownership and IDs
 
 **Question:** can a criterion be traced from this document to a test and back?
 
-- PASS: version/date, author, named approver and approval mechanism, and a **stable ID per
-  requirement and per criterion** (`REQ-###`, `AC-###-#`, or `RF-n` used consistently).
-- FAIL signals: no IDs on criteria; IDs renumbered between versions; no named approver; "status:
-  ready for implementation" with no one accountable; a date that no version history supports.
-- Ask: "Which ID do I cite in the test title for `<criterion>`, and who signs this off?"
+- PASS: version/date, author, and a **stable ID per requirement and per criterion**
+  (`REQ-###`, `AC-###-#`, or `RF-n` used consistently).
+- FAIL signals: no IDs on criteria; IDs renumbered between versions; a date that no version history
+  supports.
+- **Out of scope - never a finding:** a named approver, an approval mechanism, and the status itself.
+  Approval is the process that runs *after* this review, when the report is read and its options are
+  accepted; an intent with no approver is not a defect and never blocks.
+- Ask: "Which ID do I cite in the test title for `<criterion>`?"
+
 - Default severity: `Important` (without IDs there is no traceability, and an uncited test does not
   count as coverage).
 

@@ -9,9 +9,16 @@ reviews/
 
 # 3. Same for the spec chain: spec.md and spec-YYYY-MM-DD-<n>.md are working copies.
 /spec*.md
+#    /spec*.md only matches the root; a stray spec-YYYY-MM-DD.issues-Iteration_*.md copied into a
+#    subfolder is the same noise, so the rule is repeated unanchored.
+spec-*.md
 !/spec_example.md
 
-#4. .vscode/ is a local IDE configuration folder, not part of the kit.
+# 4. Local page-by-page dump of a PDF (bypage.csv). The review reads /report.csv, which is the
+#    additional technical data; this is a working extract of how that file was produced.
+/bypage.csv
+
+# 5. .vscode/ is a local IDE configuration folder, not part of the kit.
 .vscode/
 
 # Runtime and macOS noise - a 13 MB .venv and TCC metadata are not part of the kit.

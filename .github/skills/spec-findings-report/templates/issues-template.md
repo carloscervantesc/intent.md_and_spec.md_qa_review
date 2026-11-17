@@ -2,7 +2,8 @@
 
 > Copy this skeleton, replace every `<...>`, delete the example finding, keep the order of sections.
 > Save it as the `report` path that `spec-iteration.py` returned:
-> `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md` - never a name composed by hand.
+> `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md` - never a name composed by hand. After `--new`
+> the folder is part of the path (`reviews/chain-<n>/...`); the file name does not change.
 > Every finding keeps the block shape of `spec-findings-report`. Never leave a placeholder in the
 > delivered file.
 >
@@ -17,10 +18,13 @@
 
 **Source:** `spec-YYYY-MM-DD-<n>.md` (the archive that was reviewed)
 **Submitted as:** `spec.md` (workspace root)
-**Document header:** `<id> · v<version> · <status> · approved by <approver> · from <intent path>`
+**Document header:** `<id> · v<version> · <status> · from <intent path>`   <!-- the approver and the
+approval record are not part of the review: approval happens after it (see SP01) -->
 **Report type:** full | delta
 **Date:** <YYYY-MM-DD>
 **Iteration:** <n> - from `spec-iteration.py`, must match the `Iteration_<n>` in the file name
+**Chain:** <n> - started <YYYY-MM-DD>   <!-- omit on the first chain; after `--new`, <n> is the archive
+number the chain started at, and the iteration above counts inside it -->
 **State:** NEW | N/A
 **Forced:** no | yes - <the reason the user gave>   <!-- "yes" only when the resolver returned
      "forced": true because it ran with --force: the file was identical and is still archived as
@@ -74,7 +78,7 @@
 
 | Block | Verdict | Evidence | Findings |
 |---|---|---|---|
-| SP01 Identity and approval | PASS | §1 header, `<quote>` | - |
+| SP01 Identity and traceability | PASS | §1 header, `<quote>` | - |
 | SP02 Problem alignment | FAIL | §2 "`<quote>`" | SPEC-01 |
 | ... | ... | ... | ... |
 

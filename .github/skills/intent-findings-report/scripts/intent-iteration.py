@@ -8,7 +8,10 @@ the report for it is `reviews/intent-YYYY-MM-DD.findings-Iteration_<n>.md`.
 
 Three states, and only one of them allows a review:
 
-    MISSING    no intent.md                            -> blocking, nothing to review
+    MISSING      no intent.md                          -> blocking, nothing to review
+    INTERRUPTED  intent.md is missing because the last run archived it and never wrote that
+                 archive's report (the client dropped the answer mid-review)
+                                                     -> review that archive, nothing renamed
     UNCHANGED  intent.md is byte-identical (modulo trailing whitespace) to the last archive
                                                        -> blocking, the author changed nothing
     NEW        intent.md differs from the last archive -> archived as iteration n, review starts
@@ -108,18 +111,35 @@ def main(argv: list[str]) -> int:
         "reason": None,
     }
 
+    def resume_or_block(reason: str) -> None:
+        """The document is gone; was it gone *after* being archived? Then finish that review."""
+        pending = reviews / f"intent-{last_date}.findings-Iteration_{last_n}.md"
+        if last_path and last_date and not pending.exists():
+            result.update(
+                iteration=last_n,
+                report=str(pending),
+                archive=str(last_path),
+                review=True,
+                state="INTERRUPTED",
+                reason=(
+                    f"{INTENT} was archived as {last_path.name} and its report "
+                    f"{pending.name} was never written: the previous run stopped after the rename. "
+                    f"Review that archive as iteration {last_n}; do not rename anything again"
+                ),
+            )
+            return
+        result.update(state="MISSING", reason=reason)
+
     src = root / INTENT
     if not src.exists():
-        result.update(
-            state="MISSING",
-            reason=f"no {INTENT} at the workspace root; nothing to review"
-            + (" (--force cannot review a file that is not there)" if args.force else ""),
+        resume_or_block(
+            f"no {INTENT} at the workspace root; nothing to review"
+            + (" (--force cannot review a file that is not there)" if args.force else "")
         )
     elif not src.read_text(encoding="utf-8", errors="replace").strip():
-        result.update(
-            state="MISSING",
-            reason=f"{INTENT} exists but is empty"
-            + (" (--force cannot review an empty file)" if args.force else ""),
+        resume_or_block(
+            f"{INTENT} exists but is empty"
+            + (" (--force cannot review an empty file)" if args.force else "")
         )
     else:
         result["intent_exists"] = True
