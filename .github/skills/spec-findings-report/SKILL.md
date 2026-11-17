@@ -103,7 +103,7 @@ For `MISSING` and `UNCHANGED` the report keeps the same name and header, and con
 Write `State: N/A` (and no short report) only when the state was `NEW`. A forced run never ends in a
 short report: `--force` turns an `UNCHANGED` file into a `NEW` one, and a `MISSING` one stays `MISSING`.
 
-### Evidence inputs (unlimited, any type, any order)
+### Answer inputs (unlimited, any type, any order)
 
 The review may arrive with files besides `spec.md`: an earlier report of this document annotated
 between the lines with the answers to its questions, `report.csv` with additional technical data,
@@ -131,8 +131,22 @@ The script prints JSON: the manifest (`inputs`, `excluded`, `missing`), the answ
 `injection_suspects`) and `previous_reviews`. Quote the answers from that JSON, with file and line -
 never from a memory of what the file said.
 
-**Annotation syntax** inside an earlier report (one line each; the first two attach to the `SPEC-nn`
-heading above them):
+It also reads the questions out of the earlier report - `**Question to the author**` on its own line
+and the older `**Question to the author:** text` - and returns `baseline`, `answer_summary` and
+`open_questions`, each question with the answers matched to it and its `status`:
+
+| `status` | Meaning | What it allows |
+| --- | --- | --- |
+| `answered` | a signed, dated answer was matched (`matched_by: id`, or `subject` when it was written elsewhere and matched on wording) | the finding may be withdrawn, with the file and the line quoted |
+| `unattributed` | an answer exists but nobody signed it | it stays open; the register says who has to sign it |
+| `still_open` | nobody answered | the question is asked again, with its `**Close by:**` date |
+
+A `subject` match is a proposal: read the question and the answer together and cite both before you rely
+on it. `orphans` - an answer matched to no question - is a hint about where an answer belongs, never an
+answer.
+
+**Annotation syntax** inside an earlier report (the first two attach to the `SPEC-nn` heading above
+them; an answer may wrap over several lines - a comment is closed by `-->`, not by the end of a line):
 
 ```markdown
 ### SPEC-07 - Retention window

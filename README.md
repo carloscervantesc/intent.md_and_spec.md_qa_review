@@ -104,7 +104,7 @@ same prompt again.
 #### Handing the agent more than one file
 
 The review does not have to run on the document alone. Beyond `intent.md` the agent takes **any number
-of extra files of any kind**, read as evidence for its own open questions:
+of extra files of any kind**, read for the answers to its own open questions:
 
 - an earlier report of this intent, annotated **between the lines** with the answer to each question
   (HTML comment, blockquote, or a comment inside the finding block);
@@ -119,13 +119,18 @@ answers written between the lines, which is where an author naturally leaves the
 it anywhere and name it in the prompt:
 
 ```
-Review intent.md using report.csv and the annotated reviews/intent-2026-11-15.findings-Iteration_1_answers.md as evidence
+Review intent.md using report.csv and the annotated reviews/intent-2026-11-15.findings-Iteration_1_answers.md as answers
 ```
 
 The agent runs `intent-inputs.py`, which turns the pile into a manifest: each file with its type, hash,
 line count and what it settled; every answer matched to a finding ID with its author and date;
 conflicting answers, comments tied to no question, and lines that look like instructions listed
-separately. `--with-previous` also picks up the newest plain report in `reviews/`, the baseline the delta
+separately. It also reads the questions out of the earlier report - both `**Question to the author**`
+on its own line and the older `**Question to the author:** text` - and returns them as
+`open_questions`, each with the answers that were matched to it by ID or by subject and a status:
+`answered` (signed, dated), `unattributed` (nobody signed it) or `still_open`. The summary line
+(`answer_summary`) says how many of each, so the review starts from the same questions the last cycle
+asked instead of inventing new ones. `--with-previous` also picks up the newest plain report in `reviews/`, the baseline the delta
 compares against. Anything unrecognizable is refused by name (`answer-key`, `binary`, `duplicate`)
 and listed in the report, so you know it was seen and not read.
 
@@ -209,8 +214,8 @@ decides by itself. A missing or empty `spec.md` stays a Blocking `MISSING`.
 
 #### Handing the spec agent more than one file
 
-The spec review takes the same evidence the intent review takes - any number of files, read as context
-for its own open questions:
+The spec review takes the same inputs the intent review takes - any number of files, read for the
+answers to its own open questions:
 
 - an earlier report of this spec, annotated **between the lines** with the answer to each question;
 - `report.csv` with additional technical data: volumes, rates, counts, error codes;
@@ -223,10 +228,11 @@ Two places need no flag, exactly as in the intent kit: `report.csv` at the root 
 `reviews/<report>_answers.md`. Anything else is named in the prompt:
 
 ```
-Review spec.md using report.csv, screen.png and the annotated reviews/spec-2026-11-15.issues-Iteration_1_answers.md as evidence
+Review spec.md using report.csv, screen.png and the annotated reviews/spec-2026-11-15.issues-Iteration_1_answers.md as answers
 ```
 
-The agent runs `spec-inputs.py` (same manifest, same answer parsing, `SPEC-nn` ids), writes section 2
+The agent runs `spec-inputs.py` (same manifest, same answer parsing, `SPEC-nn` ids, same
+`open_questions` and `answer_summary` for the questions the previous report left open), writes section 2
 `Inputs reviewed` and section 6 `Answer register` in the report, and passes every file to
 `verify-report.py --input`: the run fails if a file it was given is never named, if a register row
 cites a file that was not given or a line that does not exist, or if a register row cites a screenshot.

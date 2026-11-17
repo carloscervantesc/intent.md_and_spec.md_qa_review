@@ -449,9 +449,126 @@ def test_verify() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_open_questions() -> None:
+    """The answers are only useful if they land on the question the last report actually asked."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-answers-"))
+    try:
+        (root / "reviews").mkdir()
+        (root / "spec.md").write_text("# Spec\n\nFR-01 records are retained for 90 days.\n")
+        baseline = (
+            "# Specification review\n"
+            "**Iteration:** 1\n\n"
+            "## 4. Findings\n\n"
+            "### SPEC-01 - Retention window contradicts itself\n"
+            "**Severity:** Blocking · **Block:** SP03\n\n"
+            "**Question to the author**\n\n"
+            "1. Is the retention window 90 days or 30 days for charge attempt records?\n\n"
+            "**Close by:** Finance / 2026-11-20\n\n"
+            "### SPEC-02 - The retry schedule names a final retry with no count\n"
+            "**Severity:** Important · **Block:** SP05\n\n"
+            "**Question to the author** 3 attempts or unlimited, and how many hours apart?\n\n"
+            "**Close by:** Ops / 2026-11-20\n\n"
+            "### SPEC-03 - Notification channel is best effort\n"
+            "**Severity:** Minor · **Block:** SP09\n\n"
+            "**Question to the author:** which notification channel is authoritative for dunning?\n\n"
+            "**Close by:** Ops / 2026-11-20\n\n"
+            "### SPEC-04 - Export cadence is undefined\n"
+            "**Severity:** Important · **Block:** SP07\n\n"
+            "- **Question to the author:** how often does the export run?\n"
+            "- **Close by:** Product / 2026-11-20\n\n"
+            "---\n"
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1.md").write_text(baseline)
+        # The author copies the report next to itself and writes between the lines: one answer under
+        # its own finding, one unsigned, one written at the end with no id at all, one missing.
+        annotated = baseline.replace(
+            "1. Is the retention window 90 days or 30 days for charge attempt records?",
+            "1. Is the retention window 90 days or 30 days for charge attempt records?\n"
+            "<!-- answer by Finance on 2026-11-16: 30 days;\n"
+            "     the 90-day sentence is the defect -->",
+        ).replace(
+            "**Question to the author:** which notification channel is authoritative for dunning?",
+            "**Question to the author:** which notification channel is authoritative for dunning?\n"
+            "> **Answer:** email is authoritative, SMS is a nice-to-have.",
+        ) + (
+            "\n## Notes at the end\n\n"
+            "> **Answer (Ops, 2026-11-16):** the retry schedule is 3 attempts, 24 hours apart, then the\n"
+            "> subscription is suspended.\n"
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1_answers.md").write_text(annotated)
+
+        data, err = manifest(root, "--with-previous")
+        check("answers: manifest runs", data is not None, err)
+        if data is None:
+            return
+
+        check("answers: baseline is the newest earlier report", data["baseline"] == "spec-2026-11-16.issues-Iteration_1.md", str(data["baseline"]))
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        check("answers: every question of the report is read", len(questions) == 4, str(sorted(questions)))
+        check(
+            "answers: both question forms are read",
+            "90 days or 30 days" in questions.get("SPEC-01", {}).get("question", "")
+            and "how many hours apart" in questions.get("SPEC-02", {}).get("question", ""),
+            str(questions.get("SPEC-02", {}).get("question")),
+        )
+        check(
+            "answers: the separator is not part of the question",
+            "---" not in questions.get("SPEC-04", {}).get("question", ""),
+            str(questions.get("SPEC-04", {}).get("question")),
+        )
+        q1 = questions.get("SPEC-01", {})
+        check(
+            "answers: an answer under its finding is matched by id",
+            q1.get("status") == "answered"
+            and q1["answers"][0]["matched_by"] == "id"
+            and q1["answers"][0]["author"] == "Finance",
+            str(q1),
+        )
+        check(
+            "answers: a wrapped comment is read as one answer",
+            "the 90-day sentence is the defect" in (q1.get("answers") or [{}])[0].get("answer", ""),
+            str(q1.get("answers")),
+        )
+        check(
+            "answers: the answer never leaks into the question",
+            "<!--" not in q1.get("question", ""),
+            str(q1.get("question")),
+        )
+        q2 = questions.get("SPEC-02", {})
+        check(
+            "answers: an answer with no id is matched by subject",
+            q2.get("status") == "answered"
+            and q2["answers"][0]["matched_by"] == "subject"
+            and q2["answers"][0]["author"] == "Ops",
+            str(q2),
+        )
+        q3 = questions.get("SPEC-03", {})
+        check(
+            "answers: an unsigned answer never closes a question",
+            q3.get("status") == "unattributed" and q3["answers"][0]["signed"] is False,
+            str(q3),
+        )
+        q4 = questions.get("SPEC-04", {})
+        check("answers: a question nobody answered stays open", q4.get("status") == "still_open", str(q4))
+        check(
+            "answers: the summary counts the four states",
+            data["answer_summary"] == {"questions": 4, "answered": 2, "unattributed": 1, "still_open": 1},
+            str(data["answer_summary"]),
+        )
+        check(
+            "answers: the answer carries where it was signed",
+            q1.get("answered_by", {}).get("source") == "spec-2026-11-16.issues-Iteration_1_answers.md"
+            and q1["answered_by"]["line"] > 0,
+            str(q1.get("answered_by")),
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main() -> int:
     test_manifest()
     test_doc_after_archival()
+    test_open_questions()
     test_verify()
     print(f"\n{passed} passed, {failed} failed")
     return 0 if failed == 0 else 1

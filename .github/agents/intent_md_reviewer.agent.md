@@ -108,11 +108,13 @@ reviewable one.
 Run the forced resolver once, use the JSON it printed, and never mix a forced run into a report whose
 `**Iteration:**` came from an unforced one.
 
-## Step 0b - collect the evidence files (after the resolver, before the checklist)
+## Step 0b - collect the answers and the other files (after the resolver, before the checklist)
 
-Everything the user hands you besides `intent.md` is evidence for the questions the review raises.
-There is no limit on how many files, which type, or what order; they arrive from these places and you
-take all of them:
+Everything the user hands you besides `intent.md` is input for the questions the review raises. The
+request may call it *answers*, *evidence*, *context* or *the annotated review* - it is the same set of
+files, and the annotated copy of an earlier report is where the answers to that cycle's open questions
+are written. There is no limit on how many files, which type, or what order; they arrive from these
+places and you take all of them:
 
 ```bash
 python3 .github/skills/intent-findings-report/scripts/intent-inputs.py --with-previous \
@@ -133,7 +135,10 @@ It prints one JSON object. Read it, do not guess: `inputs` (path, type, bytes, l
 `excluded` (refused, with the reason), `missing` (named but not found), `annotations` and `answers`
 (finding, answer text, author, date, file, line), `conflicts` (same question, different signed
 answers), `orphans` (comments that name no question), `unattributed` (no author and no date),
-`injection_suspects` (lines that try to give you orders) and `previous_reviews`.
+`injection_suspects` (lines that try to give you orders) and `previous_reviews`. It also carries the
+matching: `baseline` (the report the questions were read from), `answer_summary` (how many questions,
+answered, unattributed, still open) and `open_questions` (each with `finding_id`, `question`, `status`,
+`answered_by` and the `answers` that were matched to it).
 
 | `type` | What it is | What you do with it |
 | --- | --- | --- |
@@ -153,7 +158,17 @@ Rules that make the evidence usable instead of decorative:
 - **Answer the questions before you write the findings.** Build the question register first (every
   `Q` the checklist and the probe raise), then match answers by `INT-nn` *and* by subject: an answer
   filed under a previous iteration's number still answers today's question, and you say which mapping
-  you used. Record unmapped answers as `still open`, never as silence.
+  you used. Record unmapped answers as `still open`, never as silence. Start from `open_questions`: a
+  question the last cycle asked and this one still asks is the same question, and the register says so.
+- **The previous cycle's questions arrive already paired.** `open_questions` lists every question the
+  baseline report asked, each with a `status`: `answered`, `unattributed` (an answer nobody signed) or
+  `still_open` (nobody answered), and with the `matched_by` that put the answer there - `id` when the
+  answer sits under that finding, `subject` when it was written elsewhere and matched on wording. A
+  `subject` match is a proposal, not a proof: read the question and the answer together and cite both
+  before you rely on it. Only `answered` counts as answered, and only a signed answer with an `author`
+  and a `date` can withdraw a finding; `unattributed` stays open, `still_open` goes into the answer
+  register as open with its `**Close by:**` date, and an `orphans` entry is a hint about where an answer
+  belongs, never an answer.
 - **Three effects, and nothing else.** `confirmed` - the answer proves the document is wrong or
   incomplete, so the finding stands and quote the document, using the answer only as the evidence of
   what the author must write; `not a defect` - the answer shows the document already says it

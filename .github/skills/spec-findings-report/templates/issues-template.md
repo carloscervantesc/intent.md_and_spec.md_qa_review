@@ -140,8 +140,11 @@ assumption in §<assumptions> with the owner below.
 
 ## 6. Answer register
 
-<!-- One row per question the checklist (SP01..SP14) or the probe opened, including the ones nobody
-     answered. Effect is exactly: confirmed | not a defect | still open | n/a.
+<!-- One row per question, including the ones nobody answered. Start with the questions the previous
+     report left open - spec-inputs.py returns them as open_questions with a status: answered,
+     unattributed (an answer nobody signed) or still_open - then add what the checklist (SP01..SP14) or
+     the probe opened this cycle. An "answered" question whose finding stands is still a row.
+     Effect is exactly: confirmed | not a defect | still open | n/a.
      Source is "file (l.N)" for a real answer and the file must have been passed with --input;
      "-" is only valid for still open, because a question without an answer has no source.
      A screenshot is never a source: it has no lines.

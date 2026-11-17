@@ -91,7 +91,10 @@ answer to unblock it. No praise, no restating the document.}}
 
 ## 6. Answer register
 
-<!-- One row per question the checklist (B11) or the probe opened, including the ones nobody
+<!-- One row per question, including the ones nobody answered. Start with the questions the previous
+     report left open - intent-inputs.py returns them as open_questions with a status: answered,
+     unattributed (an answer nobody signed) or still_open - then add what the checklist or the probe
+     opened this cycle.
      answered. Effect is exactly: confirmed | not a defect | still open | n/a.
      Source is "file (l.N)" for a real answer; "-" is only valid for still open, because a question
      without an answer has no source. IDs are stable: a finding keeps the number it was opened with,

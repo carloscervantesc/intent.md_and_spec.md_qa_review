@@ -183,11 +183,33 @@ def parse_csv(path: Path, text: str):
     return answers, f"{len(answers)} answer rows ({how})"
 
 
+def logical_lines(text: str):
+    """Yield (line_number, line), joining an HTML comment that spans lines into one entry.
+
+    An answer is often longer than the comment the author started, and a wrapped comment is still one
+    answer: read it as one line, remember where it started, and never lose the rest of it.
+    """
+    pending, start = None, 0
+    for i, line in enumerate(text.splitlines(), 1):
+        if pending is not None:
+            pending.append(line)
+            if "-->" in line:
+                yield start, " ".join(pending)
+                pending = None
+            continue
+        if "<!--" in line and "-->" not in line:
+            pending, start = [line], i
+            continue
+        yield i, line
+    if pending is not None:
+        yield start, " ".join(pending)
+
+
 def parse_annotations(path: Path, text: str):
     """Return (annotations, orphans)."""
     annotations, orphans = [], []
     current = None
-    for i, line in enumerate(text.splitlines(), 1):
+    for i, line in logical_lines(text):
         head = FINDING_HEAD.match(line)
         if head:
             current = head.group(1)
@@ -236,6 +258,118 @@ def parse_annotations(path: Path, text: str):
         }
         (annotations if record["finding_id"] else orphans).append(record)
     return annotations, orphans
+
+
+# A report does not only find defects: each finding asks its question and names who must close it.
+# Reading those questions back is what lets this cycle say which ones the answers actually close.
+# Two forms exist and both are read: `**Question to the author**` on its own line (what the template
+# asks for) and `**Question to the author:** the question` (the older one-line field, colon inside the
+# bold markers). Missing the second form silently drops every question of an older report.
+QUESTION_FIELD = re.compile(r"^\*\*Question to the author:?\*\*\s*:?\s*(?P<inline>.*)$")
+FIELD_LINE = re.compile(r"^\*\*[A-Za-z][^*]*\*\*")
+CLOSE_FIELD = re.compile(r"^\*\*Close by:?\*\*\s*(.+)$")
+SEVERITY_FIELD = re.compile(r"\*\*Severity:\*\*\s*([A-Za-z]+)")
+RULE_LINE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+HEADING = re.compile(r"^#{1,6}\s")
+LIST_MARKER = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+STOPWORDS = frozenset(
+    """
+    a an and are as at be been before by can could did do does for from has have how if in into is it
+    its may must no not of on or should so than that the their them then there these they this those to
+    was were what when where which who why will with within without would you your question answer
+    author date close decide decided value number
+    """.split()
+)
+
+
+def distinctive(text: str) -> set:
+    """The words that make two sentences talk about the same thing."""
+    words = re.findall(r"[a-z0-9][a-z0-9_-]+", text.lower())
+    return {w for w in words if len(w) > 2 and w not in STOPWORDS and not w.isdigit()}
+
+
+def parse_open_questions(path: Path, text: str):
+    """Return the questions a report left open: [{finding_id, question, line, severity, close_by}]."""
+    found, closes = [], {}
+    current, severity, collecting, block, start = None, None, False, [], 0
+    lines = logical_lines(text)
+
+    def flush():
+        if current and block:
+            found.append((current, start, list(block), severity))
+
+    for i, line in lines:
+        # A report may write the fields in a list, and a bullet between the bold markers and the text
+        # hides the field from every pattern below: strip the marker before matching, never after.
+        bare = LIST_MARKER.sub("", line, count=1)
+        if ANNOTATION.search(line) or VISIBLE.match(line):
+            # An answer written inside the question block is not part of the question.
+            collecting = False
+            continue
+        head = FINDING_HEAD.match(bare)
+        if head:
+            flush()
+            current, severity, collecting, block = head.group(1), None, False, []
+            continue
+        if SECTION_HEAD.match(line):
+            flush()
+            current, collecting, block = None, False, []
+            continue
+        close = CLOSE_FIELD.match(bare)
+        if close:
+            if current:
+                closes[current] = close.group(1).strip()
+            collecting = False
+            continue
+        if current and severity is None:
+            sev = SEVERITY_FIELD.search(line)
+            if sev:
+                severity = sev.group(1)
+        asked = QUESTION_FIELD.match(bare)
+        if asked:
+            collecting, start, block = True, i, []
+            if asked.group("inline").strip():
+                block.append(asked.group("inline").strip())
+            continue
+        if collecting:
+            if FIELD_LINE.match(bare) or RULE_LINE.match(bare) or HEADING.match(bare):
+                collecting = False
+                continue
+            if line.strip():
+                block.append(line.strip())
+    flush()
+    return [
+        {
+            "finding_id": fid,
+            "line": line,
+            "severity": sev,
+            "question": re.sub(r"\s+", " ", " ".join(lines)).strip(),
+            "close_by": closes.get(fid),
+        }
+        for fid, line, lines, sev in found
+        if " ".join(lines).strip()
+    ]
+
+
+def subject_match(text: str, questions):
+    """Return (finding_id, score) when exactly one question is the one this comment answers.
+
+    An answer written outside a finding block carries no id, so the only link left is the subject.
+    The script proposes and the reviewer confirms: two questions that fit equally well means the
+    comment is not attributed at all, never attributed to the first one that matched.
+    """
+    if not questions:
+        return None
+    asked = distinctive(text)
+    if len(asked) < 2:
+        return None
+    scored = sorted(
+        ((len(asked & distinctive(q["question"])), q["finding_id"]) for q in questions), reverse=True
+    )
+    best, fid = scored[0]
+    if best < 2 or (len(scored) > 1 and scored[1][0] == best):
+        return None
+    return fid, best
 
 
 def main(argv):
@@ -334,9 +468,13 @@ def main(argv):
         "unattributed": [],
         "injection_suspects": [],
         "previous_reviews": [],
+        "baseline": None,
+        "open_questions": [],
+        "answer_summary": {},
         "blocking": False,
     }
 
+    baseline = None
     reviews = root / "reviews"
     if reviews.is_dir():
         def iteration_of(path: Path) -> int:
@@ -355,6 +493,10 @@ def main(argv):
             if not p.name.endswith("_answers.md") and (current == 0 or iteration_of(p) < current)
         )
         manifest["previous_reviews"] = sorted(p.name for p in found_reviews)
+        if found_reviews:
+            # The report the answers came from: the newest one before the iteration under review.
+            baseline = max(found_reviews, key=iteration_of)
+            manifest["baseline"] = baseline.name
         if with_previous and found_reviews:
             # The newest report is where annotated answers are most likely to arrive.
             newest = max(found_reviews, key=iteration_of)
@@ -441,6 +583,59 @@ def main(argv):
                 texts.add(key)
                 unique.append({"answer": a["answer"], "source": a["source"], "line": a["line"]})
             manifest["conflicts"].append({"finding_id": fid, "answers": unique})
+
+    # What the previous cycle asked, and what these files actually answer: every open question of
+    # the baseline report is paired with the answers found for it, by id or by subject.
+    source = baseline
+    if source is None:
+        annotated = [i["path"] for i in manifest["inputs"] if i["type"] == "annotated-review"]
+        source = Path(annotated[0]) if annotated else None
+    text_of_source = read_text(source) if source is not None else None
+    questions = (
+        parse_open_questions(source, text_of_source)  # type: ignore[arg-type]
+        if source is not None and text_of_source
+        else []
+    )
+    buckets = {q["finding_id"]: [] for q in questions}
+
+    for answer in manifest["answers"]:
+        fid = answer.get("finding_id")
+        if fid in buckets:
+            buckets[fid].append({**answer, "matched_by": "id"})
+    for orphan in manifest["orphans"]:
+        got = subject_match(orphan["answer"], questions)
+        if got:
+            fid, score = got
+            orphan["subject_match"] = {"finding_id": fid, "score": score}
+            buckets[fid].append({**orphan, "matched_by": "subject", "score": score})
+
+    summary = {"questions": len(questions), "answered": 0, "unattributed": 0, "still_open": 0}
+    for question in questions:
+        candidates = buckets[question["finding_id"]]
+        signed = [a for a in candidates if a.get("author") and a.get("date")]
+        question["answers"] = [
+            {
+                "answer": a["answer"],
+                "author": a.get("author"),
+                "date": a.get("date"),
+                "source": a.get("source"),
+                "line": a.get("line"),
+                "matched_by": a["matched_by"],
+                "signed": bool(a.get("author") and a.get("date")),
+            }
+            for a in candidates
+        ]
+        if signed:
+            question["status"] = "answered"
+            question["answered_by"] = {"source": signed[0]["source"], "line": signed[0]["line"]}
+        elif candidates:
+            question["status"] = "unattributed"
+        else:
+            question["status"] = "still_open"
+        summary[question["status"]] += 1
+
+    manifest["open_questions"] = questions
+    manifest["answer_summary"] = summary
 
     manifest["blocking"] = bool(manifest["missing"])
     print(json.dumps(manifest, indent=2, ensure_ascii=False))
