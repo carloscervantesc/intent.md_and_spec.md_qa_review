@@ -69,6 +69,14 @@ answer to unblock it. No praise, no restating the document.}}
 | B11 | Open questions closed | | |
 | B12 | Metadata, ownership and IDs (approval is a later process step) | | |
 
+<!-- Filled example of the two ways a row earns its verdict:
+     | B03 | Actors, roles and permissions | PASS | §3 "only the Data Manager may purge" | - |
+     | B04 | Acceptance criteria observable | PASS | manual statement, `intent-comments-2026-11-17.md` (l.5) - "the check runs in the nightly job, QA owns it" | - |
+     | B06 | Business rules with numbers | FAIL (open: INT-02) | §5 "within 90 days" vs §6 "30 days" | INT-02 |
+     A PASS earned by a statement the requester typed with `--comment Bnn ...` is not a PASS earned by
+     the document: cite the line and quote it. A block with a finding still open stays FAIL and names it
+     - `FAIL (open: INT-nn)` - even when the statement answered part of it. -->
+
 ## 5. Findings
 
 <!-- One block per finding, document order, INT-01..INT-nn. Fields: Severity, Block, Location,
@@ -127,7 +135,11 @@ formats) when a test depends on them.}}
 
 <!-- Only when n > 1: closed / new / unchanged, by ID and title, read against
      reviews/intent-*.findings-Iteration_{{n-1}}.md
-     When n = 1 write: "N/A - this is the first review of this intent." -->
+     When n = 1 write: "N/A - this is the first review of this intent."
+     When the run was forced on a byte-identical document, open the section with what changed in the
+     evidence instead: "document identical - evidence changed: added X, removed Y, changed Z", straight
+     from inputs_drift in the intent-inputs.py JSON ("evidence unchanged" when differs is false, "the
+     baseline ran on the document alone" when known is false). -->
 
 ---
 ---

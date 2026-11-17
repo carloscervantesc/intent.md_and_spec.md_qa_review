@@ -422,6 +422,110 @@ def main(argv: list[str]) -> int:
         str(again["state"]),
     )
 
+    # 14. a --comment after the run that archived the document amends that report in place
+    amend = Path(tempfile.mkdtemp(prefix="spec-amend-"))
+    (amend / "reviews" / "chain-5").mkdir(parents=True)
+    (amend / f"spec-{DAY}-5.md").write_text(SPEC)
+    report5 = amend / "reviews" / "chain-5" / f"spec-{DAY}.issues-Iteration_1.md"
+    report5.write_text(short_report("FAIL", 1, None))
+    comments = amend / "reviews" / "chain-5" / f"spec-comments-{DAY}.md"
+    comments.write_text(
+        f"- **SP01** | the bypage examples answer themselves | ccervantes (chat) | {DAY}\n"
+    )
+    (amend / "reviews" / ".last-processed.json").write_text(json.dumps({
+        "schema": 1, "doc": f"spec-{DAY}-5.md", "date": DAY, "iteration": 5,
+        "archive": f"spec-{DAY}-5.md",
+        "report": f"reviews/chain-5/spec-{DAY}.issues-Iteration_1.md",
+        "sha256": "0" * 64, "state": "NEW", "amend": False, "updated": "2026-11-17T16:00:00",
+    }))
+    r = resolve(amend)
+    ok &= check(
+        "an uncited --comment on an archived document is AMEND, not MISSING",
+        r["state"] == "AMEND" and r["review"] is False and r["amend"] is True,
+        str(r["state"]) + " review=" + str(r["review"]),
+    )
+    ok &= check(
+        "AMEND edits the report that already exists",
+        Path(r["report"]).resolve() == report5.resolve(),
+        str(r["report"]),
+    )
+    ok &= check(
+        "AMEND spends no number, copies nothing and archives nothing new",
+        r["iteration"] == 1
+        and sorted(p.name for p in amend.glob("spec-*.md")) == [f"spec-{DAY}-5.md"],
+        str(r["iteration"]) + " / " + str(sorted(p.name for p in amend.glob("spec-*.md"))),
+    )
+    ok &= check(
+        "AMEND names the archived document as the one under review",
+        Path(r["document"]).name == f"spec-{DAY}-5.md" and Path(r["archive"]).name == f"spec-{DAY}-5.md",
+        str(r["document"]),
+    )
+    ok &= check(
+        "AMEND hands the statement to the report, with the line to cite",
+        len(r["amend_statements"]) == 1
+        and r["amend_statements"][0]["ident"] == "SP01"
+        and r["amend_statements"][0]["line"] == 1,
+        str(r["amend_statements"]),
+    )
+    (amend / "reviews" / ".last-processed.json").unlink()
+    ok &= check(
+        "AMEND also finds the report without a record, from the newest archive",
+        resolve(amend)["state"] == "AMEND",
+        str(resolve(amend)["state"]),
+    )
+    report5.write_text(
+        report5.read_text()
+        + f'| PASS | manual statement, spec-comments-{DAY}.md (l.1) - "the bypage examples answer themselves" |\n'
+    )
+    settled = resolve(amend)
+    ok &= check(
+        "once the report cites the line, there is nothing to amend and no review to run",
+        settled["state"] == "MISSING" and settled["amend"] is False,
+        str(settled["state"]),
+    )
+    live = Path(tempfile.mkdtemp(prefix="spec-amendlive-")) / "x"
+    live.mkdir()
+    (live / "reviews").mkdir()
+    (live / "spec.md").write_text(SPEC)
+    running = resolve(live)
+    ok &= check(
+        "a live spec.md is a submission again: no amend, the document is reviewed",
+        running["amend"] is False and running["state"] == "NEW",
+        str(running["state"]),
+    )
+    pending = Path(tempfile.mkdtemp(prefix="spec-amendpend-"))
+    (pending / "reviews").mkdir()
+    (pending / f"spec-{DAY}-4.md").write_text(SPEC)
+    (pending / "reviews" / f"spec-comments-{DAY}.md").write_text(
+        f"- **SP01** | a statement with nowhere to land | ccervantes (chat) | {DAY}\n"
+    )
+    r = resolve(pending)
+    ok &= check(
+        "an archive whose report is missing stays INTERRUPTED instead of being amended",
+        r["state"] == "INTERRUPTED" and r["amend"] is False,
+        str(r["state"]),
+    )
+
+    done = Path(tempfile.mkdtemp(prefix="spec-complete-"))
+    (done / "reviews").mkdir()
+    (done / "reviews" / ".last-processed.json").write_text(
+        json.dumps({"schema": 1, "doc": f"spec-{DAY}-1.md", "state": "INTERRUPTED",
+                    "report": f"reviews/spec-{DAY}.issues-Iteration_1.md"})
+    )
+    before = run(str(RESOLVER), "--complete", "--root", str(done))
+    ok &= check(
+        "--complete refuses while the report it names is not on disk",
+        before.returncode == 1, str(before.returncode),
+    )
+    (done / "reviews" / f"spec-{DAY}.issues-Iteration_1.md").write_text("# report\nbody\n")
+    after = run(str(RESOLVER), "--complete", "--root", str(done))
+    rec = json.loads((done / "reviews" / ".last-processed.json").read_text())
+    ok &= check(
+        "--complete marks a review whose report exists as DONE, not INTERRUPTED",
+        after.returncode == 0 and rec["state"] == "DONE" and rec["report_lines"] == 2,
+        f"{after.returncode} {rec.get('state')}",
+    )
+
     if "--keep" in argv:
         print(f"\nworkspace kept at {ws}")
     print("\nall checks passed" if ok else "\nSOME CHECKS FAILED")

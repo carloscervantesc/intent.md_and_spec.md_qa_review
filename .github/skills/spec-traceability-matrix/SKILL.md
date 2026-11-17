@@ -58,11 +58,14 @@ is arithmetic on nothing.
 
 ## What belongs in the report
 
-The report carries a **summary** of the matrix (one line per FR with its coverage state) and the
-handful of rows that are `orphan`, `lost` or `no TC possible`. Do not paste a 200-row matrix into
-`issues.md`; write the full matrix to `reviews/<spec-name>-traceability.md` alongside the report and
-reference it. The issues report stays readable by a human under time pressure; the matrix is the working
-artifact for the test suite.
+The report carries the matrix as its **traceability section**: one line per FR with its coverage state,
+plus the rows that are `orphan`, `lost` or `no TC possible`. That section is the deliverable - the
+report stays readable by a human under time pressure.
+
+A **full companion file** (`reviews/<spec-name>-traceability.md`, one row per AC with its automation
+readiness) is written **only when the user asks for it by name**. It is never the last action of a
+review run: the report is written once and verified, and a run that dies opening a second file leaves
+the review looking unfinished when it was already green.
 
 ## Automation readiness (column in the full matrix)
 

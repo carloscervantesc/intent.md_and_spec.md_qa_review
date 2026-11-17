@@ -11,6 +11,7 @@ JSON and the exit codes. Nothing outside the temp directory is written.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -562,13 +563,14 @@ def test_manual_statements() -> None:
         )
         (root / "reviews" / "intent-2026-11-16.findings-Iteration_1.md").write_text(baseline)
 
-        data, err = manifest(root, "--with-previous", "--comment", "B01 approval no required")
+        data, err = manifest(root, "--with-previous", "--comment", "INT-1 approval no required")
         check("comment: the run succeeds", data is not None, err)
         if data is None:
             return
         check(
-            "comment: the block id is read as the finding id",
-            data["manual_statements"][0]["finding_id"] == "INT-01",
+            "comment: the typed id is normalised to the finding",
+            data["manual_statements"][0]["finding_id"] == "INT-01"
+            and data["manual_statements"][0]["target"] == "finding",
             str(data["manual_statements"]),
         )
         check(
@@ -743,13 +745,260 @@ def test_window() -> None:
     check("a window past the end fails", over.returncode == 2 and "FAIL --window 999" in over.stderr,
           over.stderr[:80])
 
+def test_inputs_drift() -> None:
+    root = Path(tempfile.mkdtemp(prefix="intent-drift-"))
+    try:
+        (root / "intent.md").write_text("# Intent\n\n## R1 - Billing\n")
+        (root / "a.md").write_text("alpha\n")
+        (root / "b.md").write_text("beta\n")
+        (root / "report.csv").write_text("case,owner\n1,billing\n")
+        old_a = hashlib.sha256(b"alpha old\n").hexdigest()[:12]
+        old_gone = hashlib.sha256(b"gone\n").hexdigest()[:12]
+        reviews = root / "reviews"
+        reviews.mkdir()
+
+        def report(n: int, rows: str) -> None:
+            (reviews / f"intent-2026-11-17.findings-Iteration_{n}.md").write_text(
+                "# Report\n\n## 2. Inputs reviewed\n\n"
+                "| File | Type | Lines | sha256 | What it settled |\n"
+                "|---|---|---|---|---|\n" + rows + "\n## 3. Score\n"
+            )
+
+        report(1,
+               f"| a.md | notes | 1 | {old_a} | nothing |\n"
+               f"| gone.md | data | 3 | {old_gone} | nothing |\n")
+        data, err = manifest(root, "--date", "2026-11-17", "--input", "a.md", "--input", "b.md")
+        drift = (data or {}).get("inputs_drift") or {}
+        check("drift names the baseline report", drift.get("previous_report") ==
+              "intent-2026-11-17.findings-Iteration_1.md", str(drift))
+        check("drift sees the new file", "b.md" in drift.get("added", []), str(drift.get("added")))
+        check("drift sees the file that is gone", drift.get("removed") == ["gone.md"], str(drift))
+        check("drift sees a rewritten file", drift.get("changed") == ["a.md"], str(drift))
+        check("drift flags a different evidence set", drift.get("differs") is True, str(drift))
+
+        current = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()[:12]
+                   for name in ("a.md", "b.md", "report.csv")}
+        report(2, "".join(f"| {name} | data | 1 | {h} | nothing |\n" for name, h in current.items()))
+        data, _ = manifest(root, "--date", "2026-11-17", "--input", "a.md", "--input", "b.md")
+        drift = (data or {}).get("inputs_drift") or {}
+        check("no drift when the evidence is the same", drift.get("differs") is False, str(drift))
+        check("no drift and every file counted", drift.get("unchanged") == 3, str(drift))
+
+        bare = Path(tempfile.mkdtemp(prefix="intent-drift-bare-"))
+        try:
+            (bare / "intent.md").write_text("# Intent\n")
+            (bare / "reviews").mkdir()
+            (bare / "reviews/intent-2026-11-17.findings-Iteration_1.md").write_text("# Report\n\n## 1. Verdict\n")
+            data, _ = manifest(bare, "--date", "2026-11-17")
+            drift = (data or {}).get("inputs_drift") or {}
+            check("a baseline with no table is reported as unknown", drift.get("known") is False, str(drift))
+            check("an unknown baseline lists no drift", "added" not in drift, str(drift))
+        finally:
+            shutil.rmtree(bare, ignore_errors=True)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_block_statement() -> None:
+    """`B04` speaks to checklist block B04; `INT-04` speaks to finding 04. Never the same thing."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-block-"))
+    try:
+        (root / "reviews").mkdir()
+        (root / "intent-2026-11-16-2.md").write_text(DOC)
+        baseline = (
+            "# Intent review\n"
+            "**Iteration:** 1\n\n"
+            "## 4. Findings\n\n"
+            "### INT-01 - Testability of the acceptance criteria\n"
+            "**Severity:** Blocking · **Block:** B04 testability\n\n"
+            "**Question to the author**\n\n"
+            "1. Which surface proves the retention rule, and who runs the check?\n\n"
+            "**Close by:** QA / 2026-11-20\n\n"
+            "### INT-02 - Retention window contradicts itself\n"
+            "**Severity:** Important · **Block:** B03 scope\n\n"
+            "**Question to the author** 90 days or 30 days?\n\n"
+            "**Close by:** Finance / 2026-11-20\n\n"
+        )
+        (root / "reviews" / "intent-2026-11-16.findings-Iteration_1.md").write_text(baseline)
+
+        data, err = manifest(
+            root,
+            "--with-previous",
+            "--comment",
+            "B04 the check runs in the nightly job, QA owns it",
+            "--comment",
+            "INT-2 30 days",
+        )
+        check("block: the run succeeds", data is not None, err)
+        if data is None:
+            return
+        statements = {s["finding_id"]: s for s in data["manual_statements"] if s.get("recorded")}
+        check(
+            "block: B04 stays a block and INT-2 becomes finding INT-02",
+            "B04" in statements and "INT-02" in statements and "INT-04" not in statements,
+            str(list(statements)),
+        )
+        check(
+            "block: the block statement is marked as such and has no baseline row",
+            statements["B04"]["target"] == "block" and statements["B04"]["in_baseline"] is None,
+            str(statements["B04"]),
+        )
+        check(
+            "block: its candidates are the open questions of that block",
+            [c["finding_id"] for c in statements["B04"]["candidates"]] == ["INT-01"],
+            str(statements["B04"].get("candidates")),
+        )
+        check(
+            "block: the finding statement is marked as a finding on the baseline",
+            statements["INT-02"]["target"] == "finding" and statements["INT-02"]["in_baseline"] is True,
+            str(statements["INT-02"]),
+        )
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        check(
+            "block: the questions carry the block their finding sits in",
+            questions["INT-01"]["block"] == "B04" and questions["INT-02"]["block"] == "B03",
+            str({k: v["block"] for k, v in questions.items()}),
+        )
+        check(
+            "block: a block statement does not close a finding by itself",
+            questions["INT-01"]["status"] == "still_open",
+            str(questions["INT-01"]),
+        )
+        check(
+            "block: the finding statement still closes its own question",
+            questions["INT-02"]["status"] == "answered",
+            str(questions["INT-02"]),
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_annotated_labels() -> None:
+    """A report answered with `ENGG COMMENTS:` blocks is read, not grepped by hand for 86 steps."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-labelled-"))
+    try:
+        (root / "reviews").mkdir()
+        (root / "intent.md").write_text("# Intent\n\nINT-01 records are retained for 90 days.\n")
+        baseline = (
+            "# Intent review\n"
+            "**Iteration:** 1\n\n"
+            "## 4. Findings\n\n"
+            "### INT-01 - Retention window contradicts itself\n"
+            "**Severity:** Blocking · **Block:** B03\n\n"
+            "**Question to the author**\n\n"
+            "1. Is the retention window 90 days or 30 days?\n\n"
+            "**Close by:** Finance / 2026-11-20\n\n"
+            "### INT-02 - Retry schedule names no count\n"
+            "**Severity:** Important · **Block:** B05\n\n"
+            "**Question to the author** 3 attempts or unlimited?\n\n"
+            "**Close by:** Ops / 2026-11-20\n\n"
+            "---\n"
+        )
+        (root / "reviews" / "intent-2026-11-16.findings-Iteration_1.md").write_text(baseline)
+        # The suffix is the requester's: `_ENGG_COMMENTS` says nothing the parser may rely on.
+        annotated = baseline.replace(
+            "1. Is the retention window 90 days or 30 days?\n",
+            "1. Is the retention window 90 days or 30 days?\n\n"
+            "ENGG COMMENTS:\n"
+            "Option A: 30 days. The 90-day sentence is the defect.\n\n",
+        ).replace(
+            "**Question to the author** 3 attempts or unlimited?\n",
+            "**Question to the author** 3 attempts or unlimited?\n\n"
+            "**Answer:**\n"
+            "3 attempts, 24 hours apart, then suspend.\n\n",
+        )
+        (root / "reviews" / "intent-2026-11-16.findings-Iteration_1_ENGG_COMMENTS.md").write_text(annotated)
+
+        data, err = manifest(
+            root, "--with-previous", "--input", "intent-2026-11-16.findings-Iteration_1_ENGG_COMMENTS.md"
+        )
+        check("labelled: manifest runs", data is not None, err)
+        if data is None:
+            return
+        kinds = {Path(i["path"]).name: i["type"] for i in data["inputs"]}
+        check(
+            "labelled: an annotated copy is an annotated review, whatever the suffix",
+            kinds.get("intent-2026-11-16.findings-Iteration_1_ENGG_COMMENTS.md") == "annotated-review",
+            str(kinds),
+        )
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        check("labelled: both findings keep their question", len(questions) == 2, str(sorted(questions)))
+        q1 = questions.get("INT-01", {})
+        check(
+            "labelled: the answer is read and the marker is not part of the question",
+            "Option A: 30 days" in (q1.get("answers") or [{}])[0].get("answer", "")
+            and "ENGG" not in q1.get("question", ""),
+            str((q1.get("question"), q1.get("answers")))[:300],
+        )
+        check(
+            "labelled: a block with no signature cannot close a finding",
+            q1.get("status") == "unattributed",
+            str(q1),
+        )
+
+        signed, err = manifest(
+            root,
+            "--with-previous",
+            "--sign-annotated",
+            "--input",
+            "intent-2026-11-16.findings-Iteration_1_ENGG_COMMENTS.md",
+        )
+        check("labelled: manifest runs with --sign-annotated", signed is not None, err)
+        if signed is None:
+            return
+        got = {q["finding_id"]: q for q in signed["open_questions"]}
+        check(
+            "labelled: one signature per copy answers every block",
+            got.get("INT-01", {}).get("status") == "answered"
+            and got.get("INT-02", {}).get("status") == "answered",
+            str({k: v.get("status") for k, v in got.items()}),
+        )
+        a2 = (got.get("INT-02", {}).get("answers") or [{}])[0]
+        check(
+            "labelled: a bare `**Answer:**` block lands on its own finding",
+            bool("24 hours apart" in a2.get("answer", "") and a2.get("matched_by") == "id" and a2.get("line")),
+            str(a2),
+        )
+        check(
+            "labelled: two blocks by the same signer are not a conflict",
+            not signed.get("conflicts"),
+            str(signed.get("conflicts")),
+        )
+        run = subprocess.run(
+            [
+                PY,
+                str(INPUTS),
+                "--root",
+                str(root),
+                "--with-previous",
+                "--sign-annotated",
+                "--brief",
+                "--input",
+                "intent-2026-11-16.findings-Iteration_1_ENGG_COMMENTS.md",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        text = run.stdout
+        check(
+            "labelled: --brief carries the question and the answer in one call",
+            "INT-01" in text and "Option A: 30 days" in text and len(text) < 6000,
+            f"{len(text)} chars",
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main() -> int:
     test_manifest()
     test_doc_after_archival()
     test_open_questions()
     test_manual_statements()
+    test_block_statement()
+    test_annotated_labels()
     test_outline()
     test_window()
+    test_inputs_drift()
     test_verify()
     print(f"\n{passed} passed, {failed} failed")
     return 0 if failed == 0 else 1

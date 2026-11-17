@@ -80,7 +80,14 @@ number the chain started at, and the iteration above counts inside it -->
 |---|---|---|---|
 | SP01 Identity and traceability | PASS | §1 header, `<quote>` | - |
 | SP02 Problem alignment | FAIL | §2 "`<quote>`" | SPEC-01 |
+| SP04 Actors, roles, permissions | PASS | manual statement, `spec-comments-2026-11-17.md` (l.5) - "no special access is needed" | - |
+| SP11 Disclosure | FAIL (open: SPEC-04) | §7 "`<quote>`" | SPEC-04 |
 | ... | ... | ... | ... |
+
+<!-- A PASS earned by a statement the requester typed with `--comment SPnn ...` is not a PASS earned by
+     the document: cite the line, quote it, and leave the Findings cell empty only because the finding it
+     closed is recorded in section 10 with its status line. A block with a finding still open stays FAIL
+     and names it - `FAIL (open: SPEC-nn)` - even when the statement answered part of it. -->
 
 ---
 
@@ -194,7 +201,8 @@ fully testable end to end, because each one contains at least one `NOT TESTABLE`
 **Lost at requirement level:** `<n>` of `<n>`. **Lost at criterion level:** `<n>`. **Orphans:**
 `<n>` - list each capability the spec introduces with no intent requirement behind it.
 
-Full matrix: `reviews/<spec-name>-traceability.md`.
+Full matrix: `reviews/<spec-name>-traceability.md` - a companion file, written only when the user asks for
+it by name; otherwise this section is the matrix and nothing else is written after the verifier is green.
 
 ### Contradictions found inside the document
 
@@ -224,6 +232,11 @@ Until these exist, the verdict stays `FAIL`.
 ---
 
 ## 11. Delta versus iteration <N-1>
+
+<!-- When the run was forced and the document is byte-identical, this section opens with what changed
+     in the evidence instead: "document identical - evidence changed: added X, removed Y, changed Z",
+     straight from inputs_drift in the spec-inputs.py JSON ("evidence unchanged" when differs is false,
+     "the baseline ran on the document alone" when known is false). -->
 
 `Closed: <n>` · `Still open: <n>` · `New: <n>`
 

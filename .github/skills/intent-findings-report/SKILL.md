@@ -37,17 +37,22 @@ mkdir -p reviews
 python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date "$(date +%F)"
 # a forced re-review of an unchanged file: same command, one flag
 python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date "$(date +%F)" --force
+# the second prompt about the document just reviewed: no intent.md left, and the report already exists
+python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date "$(date +%F)"
+python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --last    # the record, read-only
+python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --complete  # after the report is written and the verifier passes
 ```
 
 The script looks for `intent.md`, finds the highest archived iteration, compares content (trailing
-whitespace excluded) and prints JSON. Four states:
+whitespace excluded) and prints JSON. Five states:
 
 | `state` | `review` | What happened | What you write |
 | --- | --- | --- | --- |
 | `NEW` | `true` | `intent.md` differed and was renamed to `intent-YYYY-MM-DD-<n>.md` | the full report for `Iteration_<n>`, at `report` |
 | `UNCHANGED` | `false` | `intent.md` is identical to the last archive | the short FAIL report at `report`: Blocking, nothing changed since iteration `<last_iteration>` |
-| `MISSING` | `false` | no `intent.md`, or an empty one, and the last archive already has its report | the short FAIL report at `report`: Blocking, no `intent.md` |
+| `MISSING` | `false` | no `intent.md`, or an empty one, and nothing is owed to the report of the last processed document | the short FAIL report at `report`: Blocking, no `intent.md` |
 | `INTERRUPTED` | `true` | `intent.md` was archived and that archive's report was never written - the previous run stopped after the rename | the full report for the archive, at `report`; nothing is renamed again |
+| `AMEND` | `false` | no `intent.md`, and a `--comment` is not cited by the report of the document the last run processed (`amend: true`, `amend_statements`) | the `AMEND` edit: correct the existing `report` in place - no new report, no new archive, no new number |
 
 Read `report` from the JSON and write there - never compose the path yourself. `<n>` is one more
 than every iteration the workspace already shows, counting both archives (`intent-*.md`) and reports
@@ -61,12 +66,64 @@ than every iteration the workspace already shows, counting both archives (`inten
 Never create, restore or reconstruct `intent.md`; if it is missing, that is the author's action,
 reported as Blocking. Never renumber an existing archive or report to make room.
 
+### Amend (`state: AMEND`): a `--comment` after a finished run
+
+The normal second prompt looks like a `MISSING` and is not one. Run 1 archived `intent.md` and wrote the
+report; now the user decides one block or one finding with `--comment`, about the document that was just
+reviewed. `intent.md` is gone, so the plain resolver used to answer `MISSING` - and a `MISSING` report
+there was wrong twice: the review it belongs to already happened, and the statement the user signed was
+applied by nobody. **A `--comment` is a manual correction of the review result, so the file that changes
+is the review file.**
+
+- **How the report is found:** `reviews/.last-processed.json` (`doc`, `date`, `iteration`, `archive`,
+  `report`, `sha256`, `state`, `amend`, `updated`) is written by every reviewed run and names it exactly;
+  without a record the resolver takes the newest archive and the report that belongs to it. `--last`
+  prints the record and touches nothing.
+- **What it returns:** `state: AMEND`, `review: false`, `amend: true`, `report` (the existing report -
+  the only file to write), `iteration` (that report's own number, read back from its name), `archive` and
+  `document`, and `amend_statements`: one entry per statement the report does not cite yet - `ident`,
+  `statement`, `author`, `date`, `line`.
+- **What is owed, mechanically:** every line of `reviews/chain-<n>/intent-comments-YYYY-MM-DD.md` (or of
+  the flat `reviews/intent-comments-YYYY-MM-DD.md` in the first chain) is a statement; it is owed until
+  the report quotes it as `intent-comments-YYYY-MM-DD.md (l.<line>)`. Once cited, the resolver answers
+  `MISSING` again, because there is nothing left to apply.
+- **The edit, per namespace:** a block ident (`Bnn`) makes that coverage row
+  `PASS | manual statement, intent-comments-<date>.md (l.<line>) - "<quote>"`; a finding ident (`INT-nn`),
+  and any finding a block statement decides, becomes `**Status:** Withdrawn - answered by the requester,
+  intent-comments-<date>.md (l.<line>)` with `**Answered:** yes - ...` and `**Severity:** Withdrawn - was
+  <Blocking|Important|Minor>`. The finding block stays - a withdrawal is auditable, not a deletion - and
+  the downgraded severity is what makes the verdict counts drop it. Every other finding, count and quote
+  stays untouched.
+- **The order that keeps the verifier green:** (1) `grep -n` the identifier, read only those lines;
+  (2) the coverage row, or the finding lines; (3) the answer-register row with effect `not a defect` and
+  source `<comments file> (l.<line>)` - the verifier accepts only `confirmed`, `not a defect`,
+  `still open`, `n/a`, and only `file (l.N)` as a source, never `name, date`; (4) `**Severity:** Withdrawn
+  - was <sev>` and the `N Blocking / N Important / N Minor` line adjusted to what the report now holds;
+  (5) the amend entry.
+- **The audit trail:** append to `## Amend log` (create it at the end when the report has none) one line
+  per statement - `- <date> - <ident> - statement by <author> (<file> l.<line>) - <what changed>`. Keep
+  `**State:**` as it was; rewrite `**Verdict:**` only for its counts, or for its wording when the
+  amendment closed the last blocking finding.
+- **Verify after the edit:** `verify-report.py <report> <source-archive> --input <every evidence file the
+  report reads>` must exit 0; without the `--input` flags it fails on register rows whose source it was
+  never given. Then run the resolver once more: `MISSING`, `amend: false`, `amend_statements: []` is the
+  proof the statement is applied and nothing is owed.
+- **A copy is never made.** Nothing is renamed, copied, or renumbered, and no iteration is spent.
+- **`INTERRUPTED` wins.** If the archive has no report yet, the resolver returns `INTERRUPTED` with
+  `amend: false`; the statement is applied by that pending review.
+- **A live `intent.md` wins.** With a submission on disk `amend` is `false` and the run is a normal `NEW`.
+- **Order inside one run:** the `--comment` invocation first (it writes the comments file and prints the
+  line), then the resolver (it reads that file, so the statement must exist before it runs), then
+  `--brief` with the same `--comment` arguments.
+
 ### Forced re-review (`--force`)
 
-`--force` exists for one case: the user asks for the current `intent.md` to be reviewed again even
-though it did not change. It is a human decision, never a default - a second review of identical text
-produces an identical report, so the flag buys a fresh report on purpose (a re-read after the checklist
-changed, a second reviewer, a documented re-confirmation), not progress.
+`--force` exists for two cases, both a human decision: the user asks for the current `intent.md` to be
+reviewed again even though it did not change, or the document did not change **and the evidence did** -
+the same intent handed over with more files, other files, or a rewritten answer sheet. Never a default: a
+second review of identical text with identical evidence produces an identical report, so the flag buys a
+fresh report on purpose (a re-read after the checklist changed, a second reviewer, a documented
+re-confirmation, new evidence), not progress.
 
 | | Normal run | `--force` run |
 | --- | --- | --- |
@@ -78,6 +135,29 @@ changed, a second reviewer, a documented re-confirmation), not progress.
 
 Everything after step 0 is unchanged: the forced run is a full review of the archive the resolver
 produced, checked by the same verifier. Never mark a report forced unless the JSON said `forced: true`.
+
+**Same document, different evidence.** The evidence is not part of the document's identity, so a new
+`--input` set on an unchanged `intent.md` is `UNCHANGED` by design and `--force` is what opens it. The
+manifest then carries `inputs_drift`, computed from the "Inputs reviewed" table of the baseline report:
+
+```json
+"inputs_drift": {"previous_report": "intent-2026-11-17.findings-Iteration_1.md", "known": true,
+                 "added": ["vendor-note.md"], "removed": [], "changed": ["report.csv"],
+                 "unchanged": 1, "differs": true}
+```
+
+- `added` / `removed` / `changed` are what this run reads that the previous one did not, no longer reads,
+  and reads with different content. `differs: false` means the evidence is identical too: a straight
+  re-review, with nothing to diff.
+- The report states it: the header reason (`**Forced:** yes - same document, evidence changed: +1 added,
+  1 changed`, numbers from the JSON) and the delta section, which opens with `document identical -
+  evidence changed: ...`. Section 2 lists the current set as usual; its hashes are what the next run
+  diffs against, so they are copied from the manifest and never typed from memory.
+- A finding the new or rewritten evidence touches is re-decided on that evidence even though the text is
+  byte-identical; one it does not touch keeps its number and status. Closure still needs a signed, dated
+  answer - new data is not an answer.
+- `known: false` = the baseline ran on the document alone (no table to compare): write that instead of a
+  diff.
 
 ### Answer inputs (unlimited, any type, any order)
 
@@ -98,9 +178,10 @@ Two of them are found without being named:
 python3 .github/skills/intent-findings-report/scripts/intent-inputs.py \
   --with-previous --input <path> --input <path>     # any number of --input
 python3 .../intent-inputs.py --scan-dir <folder>    # any other folder, instead of naming files
-python3 .../intent-inputs.py --comment "B01 approval no required"   # a decision typed in the chat
+python3 .../intent-inputs.py --comment "B04 the check runs in the nightly job, QA owns it"
 python3 .../intent-inputs.py --outline               # the map: every heading with the lines it owns
 python3 .../intent-inputs.py --window 2              # read one window: numbered, at most 150 lines
+python3 .../intent-inputs.py --with-previous --brief --sign-annotated --input <annotated report>
 ```
 
 `--outline` and `--window` are how the document is read: one window is one tool result of at most about
@@ -108,11 +189,33 @@ python3 .../intent-inputs.py --window 2              # read one window: numbered
 returned"*, or silence after three retries. `--window` refuses a number past the last window, so the
 count comes from `--outline`, never from a guess.
 
+`--brief` is how the **evidence** is read: one bounded digest (about 5 KB) of the chain, the inputs, the
+blocks that carry a finding, every open question with severity/block/location, every answer with the file
+and line it was signed at, the chat statements with their candidates and the conflicts. Never rebuild it
+with one `grep` per finding - a 640-line annotated report read that way burns the run's step ceiling
+(`chat.agent.maxRequests`) and the chat ends on *Continue to iterate?* with no report written.
+`--sign-annotated` signs a labelled block (`ENGG COMMENTS:`, `**Answer:**`) with `--author`/`--date`: the
+annotated copy was handed over as the requester's answers, so its blocks are answers. Without it they are
+commentary and close nothing.
+
 `--with-previous` reads the newest plain report in `reviews/`, the baseline the delta compares
-against. `--comment "<id> <statement>"` is repeatable: the id may be `B01` (the block), `INT-1` or
-`int1` - it is normalised to `INT-nn`, signed with `--author` (default `<user> (chat)`) and `--date`
-(default today), appended to `reviews/intent-comments-YYYY-MM-DD.md`, and read back on every later
-run. A statement with no id is refused with a reason instead of being guessed into a finding.
+against. `--comment "<id> <statement>"` is repeatable, signed with `--author` (default `<user> (chat)`)
+and `--date` (default today), appended to `reviews/intent-comments-YYYY-MM-DD.md`, and read back on
+every later run. A statement with no id is refused with a reason instead of being guessed into a
+finding.
+
+**The id decides between two namespaces, and they are never merged** (`target`):
+
+| typed | canonical | acts on | what the report does |
+| --- | --- | --- | --- |
+| `B04`, `B-4`, `b 4` | `B04` | checklist block, `B01..B12` | re-scores the block: `candidates` lists the open questions whose finding has `**Block:** B04`; each one the statement answers is closed with the statement cited, each one it does not stays open, and the block reaches `PASS` only when none of them is still open |
+| `INT-04`, `INT-4`, `int4` | `INT-04` | one finding | decides that finding and nothing else |
+
+`B04` is the row of the coverage table, `INT-04` is a numbered defect: an answer about testability
+belongs to block `B04` even when a defect in it happens to be numbered 04. A block that reaches `PASS`
+through a statement carries the intervention in its evidence cell -
+`| B04 | Testability | PASS | manual statement, intent-comments-YYYY-MM-DD.md (l.N) - "<quote>" |` -
+because a `PASS` with no evidence is indistinguishable from a block nobody checked.
 The script prints JSON: the manifest (`inputs`, `excluded`, `missing`), the answers
 (`annotations`, `answers`), the problems (`conflicts`, `orphans`, `unattributed`,
 `injection_suspects`) and `previous_reviews`. Quote the answers from that JSON, with file and line -
@@ -247,7 +350,10 @@ Required sections, in order:
 4. **Score** - a counted table: findings by severity, criteria probed, criteria testable, blocks
    passed/failed, questions answered / total. Counts must match the tables below (recount before
    writing).
-5. **Block coverage** - B01..B12 with `PASS` / `FAIL` / `N/A` and the evidence line for each.
+5. **Block coverage** - B01..B12 with `PASS` / `FAIL` / `N/A` and the evidence line for each. A block
+   that reaches `PASS` because the requester answered it in the chat cites the statement, not a section:
+   `PASS | manual statement, intent-comments-YYYY-MM-DD.md (l.N) - "<quote>"`. `B04 FAIL (open: INT-nn)`
+   is the correct row while a finding in the block is still open.
 6. **Findings** - ordered by document position, numbered `INT-01..INT-nn`, each with the fields of
    section 3. **A finding keeps the number it was opened with, for the life of the document**: a
    later iteration starts at the next free number and leaves a gap where a finding was closed, so
@@ -277,7 +383,9 @@ Required sections, in order:
    that were refused. Honesty over completeness.
 10. **Delta versus iteration n-1** - only when `n > 1`: which findings were closed, which are new,
     which are unchanged, read against `reviews/intent-*.findings-Iteration_<n-1>.md`. Name them by ID
-    and by title. This is the one section allowed to name an ID that has no heading in this
+    and by title. A forced run on a byte-identical document opens the section with
+    `document identical - evidence changed: ...` from `inputs_drift` (or `evidence unchanged`), because
+    there the delta is the evidence, not the text. This is the one section allowed to name an ID that has no heading in this
     iteration, because a closed finding has no block any more - the register is the other one.
 
 ## 5. Quality rules of the report

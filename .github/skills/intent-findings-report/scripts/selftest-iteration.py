@@ -283,6 +283,108 @@ def main(argv: list[str]) -> int:
         str(r["state"]),
     )
 
+    # a --comment after the run that archived the document amends that report in place
+    amend = Path(tempfile.mkdtemp(prefix="intent-amend-"))
+    (amend / "reviews").mkdir()
+    (amend / f"intent-{DAY}-4.md").write_text(INTENT)
+    report4 = amend / "reviews" / f"intent-{DAY}.findings-Iteration_4.md"
+    report4.write_text(short_report("FAIL", 4))
+    (amend / "reviews" / f"intent-comments-{DAY}.md").write_text(
+        f"- **B03** | the API contract is the guideline itself | ccervantes (chat) | {DAY}\n"
+    )
+    (amend / "reviews" / ".last-processed.json").write_text(json.dumps({
+        "schema": 1, "doc": f"intent-{DAY}-4.md", "date": DAY, "iteration": 4,
+        "archive": f"intent-{DAY}-4.md",
+        "report": f"reviews/intent-{DAY}.findings-Iteration_4.md",
+        "sha256": "0" * 64, "state": "NEW", "amend": False, "updated": "2026-11-17T16:00:00",
+    }))
+    r = resolve(amend)
+    ok &= check(
+        "an uncited --comment on an archived intent is AMEND, not MISSING",
+        r["state"] == "AMEND" and r["review"] is False and r["amend"] is True,
+        str(r["state"]) + " review=" + str(r["review"]),
+    )
+    ok &= check(
+        "AMEND edits the report that already exists and keeps its number",
+        Path(r["report"]).resolve() == report4.resolve() and r["iteration"] == 4,
+        str(r["report"]) + " #" + str(r["iteration"]),
+    )
+    ok &= check(
+        "AMEND spends no number, copies nothing and archives nothing new",
+        sorted(p.name for p in amend.glob("intent-*.md")) == [f"intent-{DAY}-4.md"],
+        str(sorted(p.name for p in amend.glob("intent-*.md"))),
+    )
+    ok &= check(
+        "AMEND hands the statement to the report, with the line to cite",
+        len(r["amend_statements"]) == 1
+        and r["amend_statements"][0]["ident"] == "B03"
+        and r["amend_statements"][0]["line"] == 1,
+        str(r["amend_statements"]),
+    )
+    ok &= check(
+        "--last prints the record without touching the workspace",
+        json.loads(run(str(RESOLVER), "--root", str(amend), "--date", DAY, "--last").stdout)
+        ["record"]["iteration"] == 4,
+        "ok",
+    )
+    (amend / "reviews" / ".last-processed.json").unlink()
+    ok &= check(
+        "AMEND also finds the report without a record, from the newest archive",
+        resolve(amend)["state"] == "AMEND",
+        str(resolve(amend)["state"]),
+    )
+    report4.write_text(
+        report4.read_text()
+        + f'| PASS | manual statement, intent-comments-{DAY}.md (l.1) - "the API contract is the guideline" |\n'
+    )
+    settled = resolve(amend)
+    ok &= check(
+        "once the report cites the line, there is nothing to amend and no review to run",
+        settled["state"] == "MISSING" and settled["amend"] is False,
+        str(settled["state"]),
+    )
+    live = Path(tempfile.mkdtemp(prefix="intent-amendlive-"))
+    (live / "reviews").mkdir()
+    (live / "intent.md").write_text(INTENT)
+    running = resolve(live)
+    ok &= check(
+        "a live intent.md is a submission again: no amend, the document is reviewed",
+        running["amend"] is False and running["state"] == "NEW",
+        str(running["state"]),
+    )
+    pending = Path(tempfile.mkdtemp(prefix="intent-amendpend-"))
+    (pending / "reviews").mkdir()
+    (pending / f"intent-{DAY}-4.md").write_text(INTENT)
+    (pending / "reviews" / f"intent-comments-{DAY}.md").write_text(
+        f"- **B03** | a statement with nowhere to land | ccervantes (chat) | {DAY}\n"
+    )
+    r = resolve(pending)
+    ok &= check(
+        "an archive whose report is missing stays INTERRUPTED instead of being amended",
+        r["state"] == "INTERRUPTED" and r["amend"] is False,
+        str(r["state"]),
+    )
+
+    done = Path(tempfile.mkdtemp(prefix="intent-complete-"))
+    (done / "reviews").mkdir()
+    (done / "reviews" / ".last-processed.json").write_text(
+        json.dumps({"schema": 1, "doc": f"intent-{DAY}-1.md", "state": "INTERRUPTED",
+                    "report": f"reviews/intent-{DAY}.issues-Iteration_1.md"})
+    )
+    before = run(str(RESOLVER), "--complete", "--root", str(done))
+    ok &= check(
+        "--complete refuses while the report it names is not on disk",
+        before.returncode == 1, str(before.returncode),
+    )
+    (done / "reviews" / f"intent-{DAY}.issues-Iteration_1.md").write_text("# report\nbody\n")
+    after = run(str(RESOLVER), "--complete", "--root", str(done))
+    rec = json.loads((done / "reviews" / ".last-processed.json").read_text())
+    ok &= check(
+        "--complete marks a review whose report exists as DONE, not INTERRUPTED",
+        after.returncode == 0 and rec["state"] == "DONE" and rec["report_lines"] == 2,
+        f"{after.returncode} {rec.get('state')}",
+    )
+
     if "--keep" in argv:
         print(f"\nworkspace kept at {ws}")
     print("\nall checks passed" if ok else "\nSOME CHECKS FAILED")

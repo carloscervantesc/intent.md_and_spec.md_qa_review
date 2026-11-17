@@ -39,17 +39,22 @@ python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)" --force
 # a different piece of work: iteration 1 of a new chain, no history read
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)" --new
+# the second prompt about the document just reviewed: no spec.md left, and the report already exists
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)"
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --last    # the record, read-only
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --complete  # after the report is written and the verifier passes
 ```
 
 The script looks for `spec.md`, finds the highest archived iteration, compares content (trailing
-whitespace excluded) and prints JSON. Four states:
+whitespace excluded) and prints JSON. Five states:
 
 | `state` | `review` | What happened | What you write |
 | --- | --- | --- | --- |
 | `NEW` | `true` | `spec.md` differed and was renamed to `spec-YYYY-MM-DD-<n>.md` | the full report for `Iteration_<n>`, at `report` |
 | `UNCHANGED` | `false` | `spec.md` is identical to the last archive | the short FAIL report at `report`: Blocking, nothing changed since iteration `<last_iteration>` |
-| `MISSING` | `false` | no `spec.md`, or an empty one, and the last archive already has its report | the short FAIL report at `report`: Blocking, no `spec.md` |
+| `MISSING` | `false` | no `spec.md`, or an empty one, and nothing is owed to the report of the last processed document | the short FAIL report at `report`: Blocking, no `spec.md` |
 | `INTERRUPTED` | `true` | `spec.md` was archived as `spec-YYYY-MM-DD-<n>.md` and that archive's report was never written - the previous run stopped after the rename | the full report for the archive, at `report`; nothing is renamed again |
+| `AMEND` | `false` | no `spec.md`, and a `--comment` is not cited by the report of the document the last run processed (`amend: true`, `amend_statements`) | the `AMEND` edit: correct the existing `report` in place - no new report, no new archive, no new number |
 
 Read `report` from the JSON and write there - never compose the path yourself. `<n>` is one more than
 every iteration the workspace already shows, counting both archives (`spec-*.md`) and reports
@@ -69,13 +74,65 @@ the archive is reviewed, the iteration is the one the archive already took, and 
 Writing a `MISSING` report over a pending `INTERRUPTED` run leaves a document that was archived and
 never reviewed. Never renumber an existing archive or report to make room.
 
+### Amend (`state: AMEND`): a `--comment` after a finished run
+
+The normal second prompt looks like a `MISSING` and is not one. Run 1 archived `spec.md` and wrote the
+report; now the user decides one block or one finding with `--comment`, about the document that was just
+reviewed. `spec.md` is gone, so the plain resolver used to answer `MISSING` - and a `MISSING` report there
+was wrong twice: the review it belongs to already happened, and the statement the user signed was applied
+by nobody. **A `--comment` is a manual correction of the review result, so the file that changes is the
+review file.**
+
+- **How the report is found:** `reviews/.last-processed.json` (`doc`, `date`, `iteration`, `archive`,
+  `report`, `sha256`, `state`, `amend`, `updated`) is written by every reviewed run and names it exactly,
+  so a date change does not lose it; without a record the resolver takes the newest archive and the report
+  that belongs to it. `--last` prints the record and touches nothing.
+- **What it returns:** `state: AMEND`, `review: false`, `amend: true`, `report` (the existing report -
+  the only file to write), `iteration` (that report's own number, read back from its name), `archive` and
+  `document` (the archived document it scored), and `amend_statements`: one entry per statement the report
+  does not cite yet - `ident`, `statement`, `author`, `date`, `line`.
+- **What is owed, mechanically:** every line of `reviews/chain-<n>/spec-comments-YYYY-MM-DD.md` is a
+  statement; it is owed until the report quotes it as `spec-comments-YYYY-MM-DD.md (l.<line>)`. Once the
+  line is cited the resolver answers `MISSING` again, because there is nothing left to apply.
+- **The edit, per namespace:** a block ident (`SPnn`) makes that coverage row
+  `PASS | manual statement, spec-comments-<date>.md (l.<line>) - "<quote>"`; a finding ident (`SPEC-nn`),
+  and any finding a block statement decides, becomes `**Status:** Withdrawn - answered by the requester,
+  spec-comments-<date>.md (l.<line>)` with `**Answered:** yes - ...` and `**Severity:** Withdrawn - was
+  <Blocking|Important|Minor>`. The finding block stays - a withdrawal is auditable, not a deletion - and
+  the downgraded severity is what makes the verdict counts drop it. Every other finding, count and quote
+  stays untouched.
+- **The order that keeps the verifier green:** (1) `grep -n` the identifier, read only those lines;
+  (2) the coverage row, or the finding lines; (3) the answer-register row with effect `not a defect` and
+  source `<comments file> (l.<line>)` - the verifier accepts only `confirmed`, `not a defect`,
+  `still open`, `n/a`, and only `file (l.N)` as a source, never `name, date`; (4) `**Severity:** Withdrawn
+  - was <sev>` and the `N Blocking / N Important / N Minor` line adjusted to what the report now holds;
+  (5) the amend entry.
+- **The audit trail:** append to `## Amend log` (create it at the end when the report has none) one line
+  per statement - `- <date> - <ident> - statement by <author> (<file> l.<line>) - <what changed>`. Keep
+  `**State:**` as it was; rewrite `**Verdict:**` only for its counts, or for its wording when the
+  amendment closed the last blocking finding.
+- **Verify after the edit:** `verify-report.py <report> <source-archive> --input <every evidence file the
+  report reads>` must exit 0; without the `--input` flags it fails on register rows whose source it was
+  never given. Then run the resolver once more: `MISSING`, `amend: false`, `amend_statements: []` is the
+  proof the statement is applied and nothing is owed.
+- **A copy is never made.** Nothing is renamed, copied, or renumbered, and no iteration is spent: the
+  document stays archived exactly once and the report keeps its name.
+- **`INTERRUPTED` wins.** If the archive has no report yet, the resolver returns `INTERRUPTED` with
+  `amend: false`; the statement is applied by that pending review.
+- **A live `spec.md` wins.** With a submission on disk `amend` is `false` and the run is a normal `NEW`;
+  amending is not a way to avoid reading a file that is there.
+- **Order inside one run:** the `--comment` invocation first (it writes the comments file and prints the
+  line), then the resolver (it reads that file, so the statement must exist before it runs), then
+  `--brief` with the same `--comment` arguments.
+
 ### Forced re-review (`--force`)
 
-`--force` exists for one case: the user asks for the current `spec.md` to be reviewed again even though
-it did not change. It is a human decision, never a default - a second review of identical text produces
-an identical report, so the flag buys a fresh report on purpose (a re-read after the checklist changed, a
-second reviewer, a documented re-confirmation), not progress, and never a way to turn a `FAIL` into a
-`PASS`.
+`--force` exists for two cases, both a human decision: the user asks for the current `spec.md` to be
+reviewed again even though it did not change, or the document did not change **and the evidence did** -
+the same spec handed over with more files, other files, or a rewritten answer sheet. Never a default: a
+second review of identical text with identical evidence produces an identical report, so the flag buys a
+fresh report on purpose (a re-read after the checklist changed, a second reviewer, a documented
+re-confirmation, new evidence), not progress, and never a way to turn a `FAIL` into a `PASS`.
 
 | | Normal run | `--force` run |
 | --- | --- | --- |
@@ -87,6 +144,30 @@ second reviewer, a documented re-confirmation), not progress, and never a way to
 
 Everything after step 0 is unchanged: the forced run is a full review of the archive the resolver
 produced, checked by the same verifier. Never mark a report forced unless the JSON said `forced: true`.
+
+**Same document, different evidence.** The evidence is not part of the document's identity, so a new
+`--input` set on an unchanged `spec.md` is `UNCHANGED` by design and `--force` is what opens it. The
+manifest then carries `inputs_drift`, computed from the "Inputs reviewed" table of the baseline report:
+
+```json
+"inputs_drift": {"previous_report": "spec-2026-11-17.issues-Iteration_1.md", "known": true,
+                 "added": ["vendor-billing.xlsx.md"], "removed": [], "changed": ["report.csv"],
+                 "unchanged": 1, "differs": true}
+```
+
+- `added` / `removed` / `changed` are what the run reads that the previous one did not, that it no longer
+  reads, and that it reads with different content. `differs: false` means the evidence is identical too:
+  the forced run is then a straight re-review and says nothing about a diff.
+- The report states it: the header reason (`**Forced:** yes - same document, evidence changed: +1 added,
+  1 changed`, numbers from the JSON) and the first line of section 10 (`document identical - evidence
+  changed: ...`). Section 2 lists the current set as usual; its hashes are what the next run will diff
+  against, so they are copied from the manifest and never typed from memory.
+- A finding the new or rewritten evidence touches is re-decided on that evidence even though the text is
+  byte-identical; one that it does not touch keeps its number and status. Closure still needs a signed,
+  dated answer - new data is not an answer, and `report.csv` can confirm a number, never withdraw a
+  finding.
+- `known: false` = the baseline ran on the document alone (no table to compare): write that instead of a
+  diff.
 
 ### A new line of work (`--new`)
 
@@ -161,16 +242,25 @@ Two of them are found without being named:
 python3 .github/skills/spec-findings-report/scripts/spec-inputs.py \
   --with-previous --input <path> --input <path>     # any number of --input
 python3 .../spec-inputs.py --scan-dir <folder>      # any other folder, instead of naming files
-python3 .../spec-inputs.py --comment "SP01 approval not required"   # a decision taken in the chat
+python3 .../spec-inputs.py --comment "SP04 no special access is needed, it sits behind the login"
 python3 .../spec-inputs.py --outline                # the map: every heading with the lines it owns
 python3 .../spec-inputs.py --window 5               # read one window: numbered, at most 150 lines
+python3 .../spec-inputs.py --with-previous --brief --sign-annotated --input <annotated report>
 ```
-
 `--outline` and `--window` are how the document is read, not a convenience: one window is one tool
 result of at most about 10 KB, and a 600-line spec read whole is forty. A request that carries the
 whole document is the request the client stops answering (*"Sorry, no response was returned"*, or
 silence after three retries). `--window` refuses a number past the last window, so the count comes from
 `--outline`, never from a guess.
+
+`--brief` is how the **evidence** is read: one bounded digest (about 5 KB) of the chain, the inputs, the
+blocks that carry a finding, every open question with severity/block/location, every answer with the file
+and line it was signed at, the chat statements with their candidates and the conflicts. Never rebuild it
+with one `grep` per finding - a 640-line annotated report read that way burns the run's step ceiling
+(`chat.agent.maxRequests`) and the chat ends on *Continue to iterate?* with no report written.
+`--sign-annotated` signs a labelled block (`ENGG COMMENTS:`, `**Answer:**`) with `--author`/`--date`: the
+annotated copy was handed over as the requester's answers, so its blocks are answers. Without it they are
+commentary and close nothing.
 
 `--with-previous` reads the newest plain report in `reviews/`, the baseline the delta compares
 against.
@@ -193,16 +283,31 @@ A `subject` match is a proposal: read the question and the answer together and c
 on it. `orphans` - an answer matched to no question - is a hint about where an answer belongs, never an
 answer.
 
-**A statement typed in the chat (`--comment`) is a signed answer.** `--comment "SP01 approval not
-required"` writes one line to `reviews/spec-comments-YYYY-MM-DD.md` - `- **SPEC-01** | approval not
-required | <author> | <date>` - and returns it in `manual_statements` (`finding_id`, `statement`,
-`author`, `date`, `source`, `line`, `recorded`, `in_baseline`). The id may be typed `SP01`, `SP-1` or
-`SPEC-1`; it is normalised to `SPEC-nn`. That line is the source of the register row
-(`spec-comments-YYYY-MM-DD.md (l.N)`), the file is named in `Inputs reviewed`, and it is passed to the
-verifier as `--input`. A statement with no id is refused by the script with a reason - ask the user
-which finding it decides instead of inventing one. A statement naming an id the earlier report never
-used is still recorded (`in_baseline: false`): it decides a finding this review opened. The file is
-re-read on every later run, so a decision stays on the record without being retyped.
+**A statement typed in the chat (`--comment`) is a signed answer.** It writes one line to
+`reviews/spec-comments-YYYY-MM-DD.md` - in the **active chain**, so `reviews/chain-<n>/spec-comments-YYYY-MM-DD.md`
+once the workspace has chain folders, flat `reviews/` in the first chain - and returns it in `manual_statements` (`finding_id`, `statement`,
+`author`, `date`, `source`, `line`, `recorded`, `target`, `in_baseline`, and `candidates` for a block).
+That line is the source of the register row (`spec-comments-YYYY-MM-DD.md (l.N)`), the file is named in
+`Inputs reviewed`, and it is passed to the verifier as `--input`. A statement with no id is refused by
+the script with a reason - ask the user what it decides instead of inventing an id. A statement naming
+an id the earlier report never used is still recorded (`in_baseline: false`): it decides a finding this
+review opened. The file is re-read on every later run, so a decision stays on the record without being
+retyped. It is never an edit: `spec.md` is not touched.
+
+The id decides between two namespaces, and the script keeps them apart (`target`):
+
+| typed | canonical | acts on | what the report does |
+| --- | --- | --- | --- |
+| `SP04`, `SP-4`, `sp 4` | `SP04` | checklist block, `SP00..SP14` | re-scores the block: `candidates` lists the open questions whose finding has `**Block:** SP04`; each one the statement answers is closed with the statement cited, each one it does not stays open, and the block reaches `PASS` only when none of them is still open |
+| `SPEC-04`, `SPEC 4` | `SPEC-04` | one finding | decides that finding and nothing else |
+
+`SP04` is not finding 4 and never becomes `SPEC-04`: the block is a row of the coverage table, the
+finding is a numbered defect, and an answer about "Actors, roles, permissions" belongs to the block even
+when a defect in it happens to be numbered 04.
+
+A block that reaches `PASS` through a statement carries the intervention in its evidence cell -
+`| SP04 Actors, roles, permissions | PASS | manual statement, spec-comments-YYYY-MM-DD.md (l.N) -
+"<quote>" | - |` - because a PASS with no evidence is indistinguishable from a block nobody checked.
 
 **Annotation syntax** inside an earlier report (the first two attach to the `SPEC-nn` heading above
 them; an answer may wrap over several lines - a comment is closed by `-->`, not by the end of a line):
@@ -272,7 +377,10 @@ Rules, because evidence is where a review quietly stops being one:
 2. **Verdict** - `FAIL` / `CONDITIONAL` / `PASS` + one sentence + the three counts.
 3. **Score** - findings by severity; acceptance criteria probed / fully testable / blocked; blocks
    `PASS`/`FAIL`/`N/A`; references `verified present` / `unverified`; traceability covered / lost.
-4. **Block coverage** - `SP01..SP14` table with verdict + evidence + finding ids.
+4. **Block coverage** - `SP01..SP14` table with verdict + evidence + finding ids. A block that reaches
+   `PASS` because the requester answered it in the chat cites the statement, not a section:
+   `PASS | manual statement, spec-comments-YYYY-MM-DD.md (l.N) - "<quote>"`. `SP04 FAIL (open: SPEC-nn)`
+   is the correct row while a finding in the block is still open.
 5. **Findings** - `SPEC-01..` in **requirement order**: a criterion finding follows the requirement it
    tests, so the author closes the requirement and its criteria in one place. Each in the block below.
    A finding keeps the number it was opened with, for the life of the document: iteration 1 is
@@ -282,7 +390,8 @@ Rules, because evidence is where a review quietly stops being one:
    what is missing to make it a test), plus the counts `n of m testable` and a short table of the
    criteria that cannot become tests as written, with the findings that block each.
 7. **Traceability summary** - one line per FR: intent requirement, ACs, TCs, data/stub/clock needed,
-   state. Full matrix goes to `reviews/<spec-name>-traceability.md`. When the document contradicts
+   state. This section is the matrix; a full companion file `reviews/<spec-name>-traceability.md` is
+   written only when the user asks for it by name, and never as the last action of a run. When the document contradicts
    itself, add a **contradictions table** (`subject | sentence A | sentence B`) - it is the fastest way
    for an author to see that the document disagrees with itself rather than with QA.
 8. **What this review could not verify** - `reference | present in workspace | what to ask for`.
@@ -290,7 +399,10 @@ Rules, because evidence is where a review quietly stops being one:
 9. **Minimum set to reach PASS** - the shortest list of additions that would flip the verdict, numbered,
    each pointing to the findings it closes. This is the section the author reads first.
 10. **Delta versus iteration N-1** - `closed` / `still open` / `new`, by id. When `<n>=1`:
-    `N/A - this is the first review of this specification.`
+    `N/A - this is the first review of this specification.` When the run was forced and
+    `inputs_drift.differs` is true, the section opens with `document identical - evidence changed: added
+    <names>, removed <names>, changed <names>` (or `evidence unchanged` when it is false), because there
+    the delta is the evidence, not the text.
 
 ## Severity
 

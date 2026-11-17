@@ -28,7 +28,7 @@ The `plan.md` reviewer is the next sibling; this kit stops at the spec.
     intent-testability-probe/SKILL.md    Q1 who observes / Q2 data / Q3 value / Q4 mutation
     intent-findings-report/SKILL.md      severity, naming, iteration, self-check
       templates/findings-template.md
-      scripts/intent-iteration.py        resolves MISSING / UNCHANGED / NEW / INTERRUPTED, archives
+      scripts/intent-iteration.py        resolves MISSING / UNCHANGED / NEW / INTERRUPTED / AMEND + --last, archives
       scripts/selftest-iteration.py      walks every state and gates each report
       scripts/intent-inputs.py           reads the evidence files: answers, conflicts, refused files
       scripts/selftest-inputs.py         walks the evidence path and the register checks
@@ -37,7 +37,7 @@ The `plan.md` reviewer is the next sibling; this kit stops at the spec.
     spec-traceability-matrix/SKILL.md    REQ → FR → AC → TC, orphans and lost requirements
     spec-findings-report/SKILL.md        report format, registry, the finding block
       templates/issues-template.md
-      scripts/spec-iteration.py          resolves MISSING / UNCHANGED / NEW / INTERRUPTED, archives
+      scripts/spec-iteration.py          resolves MISSING / UNCHANGED / NEW / INTERRUPTED / AMEND + --last, archives
       scripts/selftest-spec-iteration.py walks every state and gates each report
       scripts/spec-inputs.py             reads the evidence files: answers, screenshots, refused files
       scripts/selftest-spec-inputs.py    walks the evidence path and the register checks
@@ -106,17 +106,29 @@ same prompt again.
 Same mechanism as the spec kit, on the intent side: a finding often needs a decision, not a document.
 
 ```
-Review intent.md --comment B01 approval no required
+Review intent.md --comment B04 the check runs in the nightly job, QA owns it
+Review intent.md --comment INT-07 the window is 30 days
 ```
 
-The id may be typed as the **block** (`B01`), or as the finding (`INT-1`, `int1`, `INT-01`); it is
-normalised to `INT-nn`. One `--comment "<id> <statement>"` per decision, repeatable, quoted or not -
-the script rejoins the words a shell split. `intent-inputs.py` appends one line per statement to
+**The id decides what the statement acts on, and there are two namespaces**: `B04` (or `B-4`, `b 4`) is
+checklist **block B04** - "Acceptance criteria observable" - and re-scores that block; `INT-04` (or
+`INT-4`) is **finding INT-04**. They are never merged: the block is a row of the coverage table, the
+finding is a numbered defect, and folding one into the other is how an answer about testability once
+landed on an unrelated finding. One `--comment "<id> <statement>"` per decision, repeatable, quoted or
+not - the script rejoins the words a shell split. `intent-inputs.py` appends one line per statement to
 `reviews/intent-comments-YYYY-MM-DD.md`:
 
 ```
-- **INT-01** | approval no required | ccervantes (chat) | 2026-11-17
+- **B04** | the check runs in the nightly job, QA owns it | ccervantes (chat) | 2026-11-17
+- **INT-07** | the window is 30 days | ccervantes (chat) | 2026-11-17
 ```
+
+A block statement comes back with `candidates`: the open questions whose finding carries `**Block:**
+B04`, so the reviewer reads each one against the statement instead of guessing which findings the block
+contains. Each candidate it answers is closed with the statement cited; each one it does not stays open,
+and the block reaches `PASS` only when none is left - the coverage row then carries the intervention,
+`PASS | manual statement, intent-comments-YYYY-MM-DD.md (l.5) - "<quote>"`. A block whose finding is
+still open reads `FAIL (open: INT-nn)`.
 
 That line is the citation (`intent-comments-YYYY-MM-DD.md (l.5)`), the file goes into `Inputs
 reviewed`, and the answer register gets a row with its effect. The statement closes the question it
@@ -207,6 +219,30 @@ or empty: that stays a Blocking `MISSING` with no report of substance.
 1. Make sure `spec.md` is at the workspace root. For a test run: `cp spec_example.md spec.md`. The first
    run archives it; a resubmission of identical content is reported as a Blocking finding, not reviewed
    twice.
+
+   **The submission is always named `spec.md`** - but the *second* prompt about a document the workspace
+   already reviewed does not need it back, and the document is not reviewed again. Naming an archive
+   (`Review spec-2026-11-17-5.md --comment SP01 ...`) runs `spec-iteration.py`, which finds the report
+   the last run wrote - through `reviews/.last-processed.json`, or the newest archive when the record is
+   gone - and answers `AMEND`: **the `--comment` is a manual correction of that review, so the report is
+   what gets modified**, in place:
+
+```bash
+# the normal second prompt: no spec.md on disk, and the statement still gets applied
+Review spec-2026-11-17-5.md --comment SP01 the bypage.csv examples answer this by themselves
+
+# what it runs, in this order
+python3 .github/skills/spec-findings-report/scripts/spec-inputs.py --comment "SP01 the bypage.csv examples answer this by themselves"
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --last     # state AMEND, and the report it names
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --date "$(date +%F)"
+# and at the end of a normal review, once the report is on disk and the verifier passed
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --complete
+```
+
+   The report keeps its name and its iteration: that block's coverage row becomes `PASS` with the
+   citation `spec-comments-<date>.md (l.<line>)` (or the finding is withdrawn with the same citation),
+   and an `## Amend log` entry says what changed. `cp spec-2026-11-17-5.md spec.md` + `--force` stays a
+   last resort for a report that does not exist - it spends a number and duplicates a document.
 2. In the new chat, open the agent dropdown in the chat input and choose **spec_md_reviewer** (if
    either agent is missing from the list, see the note at the end of step 2 above).
 3. Send this prompt, exactly:
@@ -241,22 +277,51 @@ gave>` with `State: NEW`. It is for a deliberate second report (checklist change
 re-confirmation on record) - not a way to turn a `FAIL` into a `PASS`, and not something the agent
 decides by itself. A missing or empty `spec.md` stays a Blocking `MISSING`.
 
+The same flag is how you re-review **the same `spec.md` with more or with different evidence files**:
+
+```
+Review spec.md with --force --input vendor-billing.md --input report.csv
+```
+
+The document's identity is its content, not its evidence, so an unchanged `spec.md` with a new
+`--input` set is `UNCHANGED` on its own: `--force` is what opens it, and the review is a full one, not a
+delta against the old verdict. `spec-inputs.py` reports `inputs_drift` - `added`, `removed`, `changed`,
+`unchanged`, `differs` - by diffing this run's evidence against the `Inputs reviewed` table of the
+previous report (file name plus sha256), so the report can state what it now reads that the last run did
+not: `**Forced:** yes - same document, evidence changed: +1 added, 1 changed`, and the delta section
+opens with `document identical - evidence changed: ...`. Every finding the new or rewritten evidence
+touches is re-decided on it; closure still needs a signed, dated answer, because new data confirms a
+number and never withdraws a finding.
+
 #### Deciding a finding from the chat (`--comment`)
 
 A blocking finding often does not need a document: it needs a decision. Say it in the prompt and the
 review records it as a signed answer:
 
 ```
-Review spec.md --comment SP01 approval not required
+Review spec.md --comment SP04 no special access is needed, the report sits behind the login
+Review spec.md --comment SPEC-07 the retry window is 24 hours
 ```
 
-One `--comment "<id> <statement>"` per decision - repeat the flag for several. The id may be typed
-`SP01`, `SP-1`, `spec-1` or `SPEC-01`; it is normalised to `SPEC-nn`. `spec-inputs.py` appends one line
-per statement to `reviews/spec-comments-YYYY-MM-DD.md`:
+One `--comment "<id> <statement>"` per decision - repeat the flag for several. **The id decides what the
+statement acts on, and there are two namespaces**: `SP04` (or `SP-4`, `sp 4`) is checklist **block SP04**
+- "Actors, roles, permissions" - and re-scores that block; `SPEC-04` (or `SPEC 4`) is **finding
+SPEC-04**. They are never merged into one id: a block is a row of the coverage table, a finding is a
+numbered defect, and the two numbers mean different things (`SP04` was actors while finding 04 was the
+dedupe rule in the same review). `spec-inputs.py` appends one line per statement to
+`reviews/spec-comments-YYYY-MM-DD.md` (in the active chain that is `reviews/chain-<n>/spec-comments-YYYY-MM-DD.md`; the first chain has no folder):
 
 ```
-- **SPEC-01** | approval not required | ccervantes (chat) | 2026-11-17
+- **SP04** | no special access is needed, the report sits behind the login | ccervantes (chat) | 2026-11-17
+- **SPEC-07** | the retry window is 24 hours | ccervantes (chat) | 2026-11-17
 ```
+
+A block statement comes back with `candidates`: the open questions whose finding carries `**Block:**
+SP04`, so the reviewer reads each one against the statement instead of guessing which findings the block
+contains. Each candidate it answers is closed with the statement cited; each one it does not stays open,
+and the block reaches `PASS` only when none is left - the coverage row then carries the intervention,
+`PASS | manual statement, spec-comments-YYYY-MM-DD.md (l.5) - "<quote>"`. A block whose finding is still
+open reads `FAIL (open: SPEC-nn)`.
 
 That line is the source the report cites (`spec-comments-YYYY-MM-DD.md (l.5)`), the file appears in
 section 2 `Inputs reviewed`, and the answer register gets a row with its effect - `confirmed` when the
@@ -316,14 +381,19 @@ python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date "$(date +%F)" --force
 # a different piece of work: iteration 1 of a new chain (spec kit)
 python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date "$(date +%F)" --new
+# the second prompt about the document just reviewed: no live document, and the report it wrote already exists
+python3 .github/skills/intent-findings-report/scripts/intent-iteration.py --date "$(date +%F)"
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date "$(date +%F)"
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --last
 ```
 
 | `state` | `review` | What the run writes |
 |---|---|---|
-| `MISSING` | `false` | a short FAIL report at `report`: one Blocking finding, the document is not at the root |
+| `MISSING` | `false` | a short FAIL report at `report`: one Blocking finding, the document is not at the root and no report owes an answer |
 | `UNCHANGED` | `false` | a short FAIL report at `report`: one Blocking finding, nothing changed since `last_iteration` |
 | `INTERRUPTED` | `true` | the full report for the archive the last run made (`last_archive`) and never reviewed - the answer was lost between the rename and the report |
 | `NEW` | `true` | the document is renamed to `<doc>-YYYY-MM-DD-<n>.md` and the full report goes to `report` |
+| `AMEND` | `false` | no live document, and a `--comment` the report of the last processed document does not cite yet (`amend: true`, `amend_statements`): that **existing report** is corrected in place - no new document, no new report, no new number |
 
 `report` is a field of the JSON, never a path composed by hand:
 
@@ -334,15 +404,40 @@ python3 .github/skills/spec-findings-report/scripts/spec-iteration.py     --date
 
 `<n>` is one more than every iteration the workspace already shows, archives and reports together, so a
 report that already exists is never overwritten. In a `NEW` run of the first chain the archive and the
-report carry the same `<n>` (see *A second, unrelated document* for the exception). The document itself is never created and never restored by the reviewer: `spec.md` missing
-is a `MISSING` run, not a reason to copy the example file.
+report carry the same `<n>` (see *A second, unrelated document* for the exception). The document itself
+is never created and never restored by the reviewer: `spec.md` missing is a `MISSING` run, not a reason
+to copy the example file.
+
+`AMEND` is the fifth state, and the one this workspace was missing: a `--comment` arriving **after** the
+reviewed document was archived. A `--comment` is a manual correction of the review result, so the file it
+changes is the review file: the resolver names the report that already exists, the statement is applied
+there - that block's coverage row becomes `PASS` with the citation `spec-comments-<date>.md (l.<line>)`,
+or that finding is withdrawn with the same citation - and an `## Amend log` entry records it. Nothing is
+reviewed again, nothing is copied and no iteration is spent. The record that makes it possible is
+`reviews/.last-processed.json` - `doc`, `date`, `iteration`, `archive`, `report`, `sha256`, `state`,
+`amend`, `updated` - written by every reviewed run and printed by `--last`; `--complete` sets `state` to
+`DONE` and adds `report_lines`/`report_sha256` once the report exists, so a finished review stops
+reading as `INTERRUPTED`:
+
+```bash
+python3 .github/skills/spec-findings-report/scripts/spec-iteration.py --last
+# {"record": {"doc": "spec-2026-11-17-5.md", "iteration": 5, "archive": "spec-2026-11-17-5.md",
+#             "report": "reviews/chain-5/spec-2026-11-17.issues-Iteration_5.md", "sha256": "...",
+#             "state": "NEW", "amend": false, "updated": "..."},
+#  "path": "reviews/.last-processed.json"}
+```
+
+Three guards, in this order: a live `spec.md`/`intent.md` always wins (`amend: false`, a normal `NEW`);
+an archive whose report was never written stays `INTERRUPTED` (one report per iteration, the amend waits);
+and a missing or corrupt record is not an error, every reader falls back to the newest archive.
 
 Both blocking states end the run: a second review of identical text produces an identical report, and a
 reviewer who reports on a stale file manufactures progress. Comparing ignores trailing whitespace only,
 which is why the workspace settings keep `files.trimTrailingWhitespace` off.
 
 Both kits have one documented exception, `--force`, and no other: a re-review of an **unchanged**
-document that a person asked for. It converts an `UNCHANGED` run into a `NEW` one - the identical
+document that a person asked for - including the same document with a different evidence set, which is
+`UNCHANGED` by content and only `--force` opens. It converts an `UNCHANGED` run into a `NEW` one - the identical
 `intent.md` or `spec.md` is archived under a fresh number, the full review runs again, and the report
 says `**Forced:** yes - <reason>` next to `State: NEW`. It never converts a `MISSING` run (there is no
 file to review), it never reuses a number, and the agent never chooses it because a document "should"
@@ -377,7 +472,26 @@ Two mechanical rules now keep it small, and neither is left to the model's judge
 ```bash
 python3 .../spec-inputs.py --outline    # every heading with the lines it owns, plus a read plan
 python3 .../spec-inputs.py --window 3   # one window, numbered, at most 150 lines (~10 KB)
+python3 .../spec-inputs.py --with-previous --brief --sign-annotated --input <annotated report>
 ```
+The evidence has a rule of its own, because it fails differently: an annotated report - the previous
+report copied with the answers written between the lines, whatever suffix the author chose
+(`_answers.md`, `_ENGG_COMMENTS.md`, `_annotated.md`) - used to be parsed only when the suffix happened
+to be `_answers`. The other suffixes fell through as opaque files, so the agent opened the 640-line report
+and read it one `grep` per finding. That is a run that reaches eighty-six steps with the report file still
+empty, until the chat client stops the turn on its step ceiling (`chat.agent.maxRequests`, 200 here) and
+offers **Continue to iterate?** instead of the report. Three fixes, all in the script, none of them a
+matter of the model trying harder:
+
+- **Any suffix after `Iteration_` is an annotated copy.** Only the digit-only name is the plain report of
+  that iteration; anything else after `Iteration_` is the author's copy and its answers are read.
+- **A labelled block is an answer.** `ENGG COMMENTS:`, `**Answer:**`, `RESPUESTAS:`, `COMENTARIOS:` and
+  the bare forms open a body that runs until the next field, heading or marker. That third shape is the
+  one people actually use, and the one the parser used to skip.
+- **`--brief` prints the whole input set in one bounded call** - about 5 KB: chain, inputs with sha256,
+  blocks carrying a finding, every open question with severity/block/location, every answer with its file
+  and line, the chat statements with their candidates, the conflicts. `--sign-annotated` signs those
+  blocks with `--author`/`--date`, because the copy was handed over as the answers, not as commentary.
 
 The document is read window by window through the script, never with `read_file`/`cat` on the whole
 file; the agent's own instruction files and anything outside the workspace root are not read at all. In

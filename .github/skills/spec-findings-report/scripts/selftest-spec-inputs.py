@@ -11,6 +11,7 @@ JSON and the exit codes. Nothing outside the temp directory is written.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -674,7 +675,7 @@ def test_manual_statements() -> None:
             root,
             "--with-previous",
             "--comment",
-            "SP01 approval not required",
+            "SPEC-01 approval not required",
             "--comment",
             "no id at all",
             "--author",
@@ -690,7 +691,7 @@ def test_manual_statements() -> None:
         recorded = [s for s in statements if s.get("recorded")]
         refused = [s for s in statements if not s.get("recorded")]
         check(
-            "comment: the short id SP01 is the finding SPEC-01",
+            "comment: SPEC-01 is the finding SPEC-01, spelled the report spells it",
             len(recorded) == 1 and recorded[0]["finding_id"] == "SPEC-01",
             str(statements),
         )
@@ -712,7 +713,7 @@ def test_manual_statements() -> None:
         check(
             "comment: the line a reviewer can cite exists in that file",
             written.is_file()
-            and f"- **SPEC-01** | approval not required | Carlos | 2026-11-17" in written.read_text(),
+            and "- **SPEC-01** | approval not required | Carlos | 2026-11-17" in written.read_text(),
             written.read_text() if written.is_file() else "missing",
         )
         check(
@@ -737,7 +738,7 @@ def test_manual_statements() -> None:
         )
 
         again, err = manifest(
-            root, "--with-previous", "--comment", "SP01 approval not required", "--author", "Carlos", "--date", "2026-11-17"
+            root, "--with-previous", "--comment", "SPEC-01 approval not required", "--author", "Carlos", "--date", "2026-11-17"
         )
         check("comment: a second run with the same statement still runs", again is not None, err)
         if again is not None:
@@ -754,7 +755,7 @@ def test_manual_statements() -> None:
             )
 
         # A shell drops the quotes: the same statement arrives as five separate arguments.
-        loose, err = manifest(root, "--with-previous", "--comment", "SP02", "three", "attempts", "--author", "Carlos", "--date", "2026-11-17")
+        loose, err = manifest(root, "--with-previous", "--comment", "SPEC-02", "three", "attempts", "--author", "Carlos", "--date", "2026-11-17")
         check("comment: an unquoted statement keeps its words", loose is not None, err)
         if loose is not None:
             got = [s for s in loose["manual_statements"] if s.get("recorded") and s["finding_id"] == "SPEC-02"]
@@ -765,7 +766,7 @@ def test_manual_statements() -> None:
             )
 
         # An id nobody wrote yet is recorded too: it may be a finding this cycle opened.
-        later, err = manifest(root, "--with-previous", "--comment", "sp7 keep the daily purge", "--date", "2026-11-17")
+        later, err = manifest(root, "--with-previous", "--comment", "spec7 keep the daily purge", "--date", "2026-11-17")
         check("comment: a new id is accepted, not dropped", later is not None, err)
         if later is not None:
             fresh = [s for s in later["manual_statements"] if s.get("recorded") and s["finding_id"] == "SPEC-07"]
@@ -873,6 +874,275 @@ def test_window() -> None:
     check("a window past the end fails", over.returncode == 2 and "FAIL --window 999" in over.stderr,
           over.stderr[:80])
 
+def test_block_statement() -> None:
+    """`--comment SP04 ...` speaks to the block, and never becomes finding SPEC-04."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-block-"))
+    try:
+        (root / "reviews").mkdir()
+        (root / "spec.md").write_text("# Spec\n\nRF-1 The report is served behind the login.\n")
+        baseline = (
+            "# Specification review\n"
+            "**Iteration:** 1\n\n"
+            "## 5. Findings\n\n"
+            "### SPEC-01 - Dedupe has no identity for a repeated name\n"
+            "**Severity:** Important - **Block:** SP09\n\n"
+            "**Question to the author** which field identifies a repeated name?\n\n"
+            "### SPEC-04 - AC-012 promises no disclosure while AC-021 removes the enforcement\n"
+            "**Severity:** Blocking - **Block:** SP11\n\n"
+            "**Question to the author** who may read the report, and what enforces it?\n\n"
+            "### SPEC-05 - The role list names no permission\n"
+            "**Severity:** Importante - **Block:** SP04\n\n"
+            "**Question to the author** which roles may open the report?\n"
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1.md").write_text(baseline)
+
+        data, err = manifest(
+            root,
+            "--with-previous",
+            "--comment",
+            "SP04 the access stick to login no special access is needed",
+            "--comment",
+            "sp-11 no special access is needed either",
+            "--comment",
+            "SPEC-4 the retry window is 24 hours",
+            "--author",
+            "ccervantes",
+            "--date",
+            "2026-11-17",
+        )
+        check("block: the run finishes", data is not None, err)
+        if data is None:
+            return
+
+        statements = {s["finding_id"]: s for s in data.get("manual_statements") or []}
+        block = statements.get("SP04") or {}
+        check("block: SP04 stays SP04 and is tagged as a block", block.get("target") == "block", str(block))
+        check(
+            "block: only the statement that named SPEC-04 lands on the finding",
+            (statements.get("SPEC-04") or {}).get("answer") == "the retry window is 24 hours",
+            str(statements.get("SPEC-04")),
+        )
+        check(
+            "block: the statement text is kept whole",
+            block.get("answer") == "the access stick to login no special access is needed",
+            str(block.get("answer")),
+        )
+        check(
+            "block: a lowercase sp-11 is the same block",
+            (statements.get("SP11") or {}).get("target") == "block",
+            str(statements.get("SP11")),
+        )
+        check(
+            "block: SPEC-4 is a finding and is zero-padded",
+            (statements.get("SPEC-04") or {}).get("target") == "finding",
+            str(statements.get("SPEC-04")),
+        )
+        check(
+            "block: the block statement lists the questions it can decide",
+            [c["finding_id"] for c in block.get("candidates") or []] == ["SPEC-05"],
+            str(block.get("candidates")),
+        )
+        check(
+            "block: a block statement is not matched to a question on its own",
+            block.get("in_baseline") is None,
+            str(block.get("in_baseline")),
+        )
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        check(
+            "block: every question knows its block",
+            (questions.get("SPEC-01") or {}).get("block") == "SP09"
+            and (questions.get("SPEC-04") or {}).get("block") == "SP11",
+            str({k: v.get("block") for k, v in questions.items()}),
+        )
+        check(
+            "block: an unrelated finding keeps only its own answer",
+            [a["answer"] for a in (questions.get("SPEC-04") or {}).get("answers") or []]
+            == ["the retry window is 24 hours"],
+            str(questions.get("SPEC-04")),
+        )
+        written = (root / "reviews" / "spec-comments-2026-11-17.md").read_text()
+        check(
+            "block: the line the report cites keeps the block id",
+            "- **SP04** | the access stick to login no special access is needed | ccervantes | 2026-11-17" in written,
+            written,
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_inputs_drift() -> None:
+    root = Path(tempfile.mkdtemp(prefix="inputs-drift-"))
+    try:
+        (root / "spec.md").write_text("# Spec\n\n## FR-1 - Billing\n")
+        (root / "a.md").write_text("alpha\n")
+        (root / "b.md").write_text("beta\n")
+        (root / "report.csv").write_text("case,owner\n1,billing\n")
+        old_a = hashlib.sha256(b"alpha old\n").hexdigest()[:12]
+        old_gone = hashlib.sha256(b"gone\n").hexdigest()[:12]
+        reviews = root / "reviews"
+        reviews.mkdir()
+
+        def report(n: int, rows: str) -> None:
+            (reviews / f"spec-2026-11-17.issues-Iteration_{n}.md").write_text(
+                "# Report\n\n## 2. Inputs reviewed\n\n"
+                "| File | Type | Lines | sha256 | What it settled |\n"
+                "|---|---|---|---|---|\n" + rows + "\n## 3. Score\n"
+            )
+
+        report(1,
+               f"| a.md | notes | 1 | {old_a} | nothing |\n"
+               f"| gone.md | data | 3 | {old_gone} | nothing |\n")
+        data, err = manifest(root, "--date", "2026-11-17", "--input", "a.md", "--input", "b.md")
+        drift = (data or {}).get("inputs_drift") or {}
+        check("drift names the baseline report", drift.get("previous_report") ==
+              "spec-2026-11-17.issues-Iteration_1.md", str(drift))
+        check("drift sees the new file", "b.md" in drift.get("added", []), str(drift.get("added")))
+        check("drift sees the file that is gone", drift.get("removed") == ["gone.md"], str(drift))
+        check("drift sees a rewritten file", drift.get("changed") == ["a.md"], str(drift))
+        check("drift flags a different evidence set", drift.get("differs") is True, str(drift))
+
+        # Nothing changed in the evidence: the next report records the hashes it just used, and the
+        # run after that must not claim a drift.
+        current = {name: hashlib.sha256((root / name).read_bytes()).hexdigest()[:12]
+                   for name in ("a.md", "b.md", "report.csv")}
+        report(2, "".join(f"| {name} | data | 1 | {h} | nothing |\n" for name, h in current.items()))
+        data, err = manifest(root, "--date", "2026-11-17", "--input", "a.md", "--input", "b.md")
+        drift = (data or {}).get("inputs_drift") or {}
+        check("no drift when the evidence is the same", drift.get("differs") is False, str(drift))
+        check("no drift and every file counted", drift.get("unchanged") == 3, str(drift))
+
+        # A baseline that ran on the document alone has no table to compare against.
+        bare = Path(tempfile.mkdtemp(prefix="inputs-drift-bare-"))
+        try:
+            (bare / "spec.md").write_text("# Spec\n")
+            (bare / "reviews").mkdir()
+            (bare / "reviews/spec-2026-11-17.issues-Iteration_1.md").write_text("# Report\n\n## 1. Verdict\n")
+            data, _ = manifest(bare, "--date", "2026-11-17")
+            drift = (data or {}).get("inputs_drift") or {}
+            check("a baseline with no table is reported as unknown", drift.get("known") is False, str(drift))
+            check("an unknown baseline lists no drift", "added" not in drift, str(drift))
+        finally:
+            shutil.rmtree(bare, ignore_errors=True)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_annotated_labels() -> None:
+    """A report answered with `ENGG COMMENTS:` blocks is read, not grepped by hand for 86 steps."""
+    root = Path(tempfile.mkdtemp(prefix="selftest-labelled-"))
+    try:
+        (root / "reviews").mkdir()
+        (root / "spec.md").write_text("# Spec\n\nFR-01 records are retained for 90 days.\n")
+        baseline = (
+            "# Specification review\n"
+            "**Iteration:** 1\n\n"
+            "## 4. Findings\n\n"
+            "### SPEC-01 - Retention window contradicts itself\n"
+            "**Severity:** Blocking · **Block:** SP03\n\n"
+            "**Question to the author**\n\n"
+            "1. Is the retention window 90 days or 30 days?\n\n"
+            "**Close by:** Finance / 2026-11-20\n\n"
+            "### SPEC-02 - Retry schedule names no count\n"
+            "**Severity:** Important · **Block:** SP05\n\n"
+            "**Question to the author** 3 attempts or unlimited?\n\n"
+            "**Close by:** Ops / 2026-11-20\n\n"
+            "---\n"
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1.md").write_text(baseline)
+        # The suffix is the requester's: `_ENGG_COMMENTS` says nothing the parser may rely on.
+        annotated = baseline.replace(
+            "1. Is the retention window 90 days or 30 days?\n",
+            "1. Is the retention window 90 days or 30 days?\n\n"
+            "ENGG COMMENTS:\n"
+            "Option A: 30 days. The 90-day sentence is the defect.\n\n",
+        ).replace(
+            "**Question to the author** 3 attempts or unlimited?\n",
+            "**Question to the author** 3 attempts or unlimited?\n\n"
+            "**Answer:**\n"
+            "3 attempts, 24 hours apart, then suspend.\n\n",
+        )
+        (root / "reviews" / "spec-2026-11-16.issues-Iteration_1_ENGG_COMMENTS.md").write_text(annotated)
+
+        data, err = manifest(
+            root, "--with-previous", "--input", "spec-2026-11-16.issues-Iteration_1_ENGG_COMMENTS.md"
+        )
+        check("labelled: manifest runs", data is not None, err)
+        if data is None:
+            return
+        kinds = {Path(i["path"]).name: i["type"] for i in data["inputs"]}
+        check(
+            "labelled: an annotated copy is an annotated review, whatever the suffix",
+            kinds.get("spec-2026-11-16.issues-Iteration_1_ENGG_COMMENTS.md") == "annotated-review",
+            str(kinds),
+        )
+        questions = {q["finding_id"]: q for q in data["open_questions"]}
+        check("labelled: both findings keep their question", len(questions) == 2, str(sorted(questions)))
+        check(
+            "labelled: the answer is read and the marker is not part of the question",
+            "Option A: 30 days" in (questions.get("SPEC-01", {}).get("answers") or [{}])[0].get("answer", "")
+            and "ENGG" not in questions.get("SPEC-01", {}).get("question", "")
+            and "**Answer" not in questions.get("SPEC-02", {}).get("question", ""),
+            str({k: (v.get("question"), v.get("answers")) for k, v in questions.items()})[:400],
+        )
+        check(
+            "labelled: a block with no signature cannot close a finding",
+            questions.get("SPEC-01", {}).get("status") == "unattributed",
+            str(questions.get("SPEC-01")),
+        )
+
+        signed, err = manifest(
+            root,
+            "--with-previous",
+            "--sign-annotated",
+            "--input",
+            "spec-2026-11-16.issues-Iteration_1_ENGG_COMMENTS.md",
+        )
+        check("labelled: manifest runs with --sign-annotated", signed is not None, err)
+        if signed is None:
+            return
+        got = {q["finding_id"]: q for q in signed["open_questions"]}
+        check(
+            "labelled: one signature per copy answers every block",
+            got.get("SPEC-01", {}).get("status") == "answered"
+            and got.get("SPEC-02", {}).get("status") == "answered",
+            str({k: v.get("status") for k, v in got.items()}),
+        )
+        a2 = (got.get("SPEC-02", {}).get("answers") or [{}])[0]
+        check(
+            "labelled: a bare `**Answer:**` block lands on its own finding",
+            bool("24 hours apart" in a2.get("answer", "") and a2.get("matched_by") == "id" and a2.get("line")),
+            str(a2),
+        )
+        check(
+            "labelled: two blocks by the same signer are not a conflict",
+            not signed.get("conflicts"),
+            str(signed.get("conflicts")),
+        )
+        run = subprocess.run(
+            [
+                PY,
+                str(INPUTS),
+                "--root",
+                str(root),
+                "--with-previous",
+                "--sign-annotated",
+                "--brief",
+                "--input",
+                "spec-2026-11-16.issues-Iteration_1_ENGG_COMMENTS.md",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        text = run.stdout
+        check(
+            "labelled: --brief carries the question and the answer in one call",
+            "SPEC-01" in text and "Option A: 30 days" in text and len(text) < 6000,
+            f"{len(text)} chars",
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main() -> int:
     test_manifest()
     test_doc_after_archival()
@@ -881,6 +1151,9 @@ def main() -> int:
     test_manual_statements()
     test_outline()
     test_window()
+    test_inputs_drift()
+    test_block_statement()
+    test_annotated_labels()
     test_verify()
     print(f"\n{passed} passed, {failed} failed")
     return 0 if failed == 0 else 1
