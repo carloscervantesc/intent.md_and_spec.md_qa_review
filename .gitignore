@@ -11,6 +11,9 @@ reviews/
 /spec*.md
 !/spec_example.md
 
+#4. .vscode/ is a local IDE configuration folder, not part of the kit.
+.vscode/
+
 # Runtime and macOS noise - a 13 MB .venv and TCC metadata are not part of the kit.
 .venv/
 __pycache__/

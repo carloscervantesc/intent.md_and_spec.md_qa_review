@@ -30,6 +30,8 @@ The `plan.md` reviewer is the next sibling; this kit stops at the spec.
       templates/findings-template.md
       scripts/intent-iteration.py        resolves MISSING / UNCHANGED / NEW and archives the file
       scripts/selftest-iteration.py      walks the three states and gates each report
+      scripts/intent-inputs.py           reads the evidence files: answers, conflicts, refused files
+      scripts/selftest-inputs.py         walks the evidence path and the register checks
     spec-review-checklist/SKILL.md       the fourteen blocks SP01..SP14
     spec-testability-probe/SKILL.md      TESTABLE / TESTABLE WITH DATA / NOT TESTABLE (reason)
     spec-traceability-matrix/SKILL.md    REQ → FR → AC → TC, orphans and lost requirements
@@ -37,8 +39,12 @@ The `plan.md` reviewer is the next sibling; this kit stops at the spec.
       templates/issues-template.md
       scripts/spec-iteration.py          resolves MISSING / UNCHANGED / NEW and archives the file
       scripts/selftest-spec-iteration.py walks the three states and gates each report
+      scripts/spec-inputs.py             reads the evidence files: answers, screenshots, refused files
+      scripts/selftest-spec-inputs.py    walks the evidence path and the register checks
       scripts/verify-report.py           mechanical checks on a finished report
 reviews/                                 output: the reports
+reviews/<report>_answers.md              an earlier report with the answers written between the lines
+report.csv                               additional technical data, read as context for the questions
 requirements.txt                         no third-party packages: the scripts are stdlib only
 python_venv_install.txt                  Python version, VS Code extensions, .venv steps
 .venv/                                   local environment (Python 3.14.7), not part of the kit
@@ -91,6 +97,52 @@ Then read the answer: verdict (`FAIL` / `CONDITIONAL` / `PASS`), report path, fi
 the two verification numbers (findings, verifier failures). `FAIL` with one Blocking finding is the
 expected answer when `intent.md` is missing or identical to the last archive - fix the file and send the
 same prompt again.
+
+#### Handing the agent more than one file
+
+The review does not have to run on the document alone. Beyond `intent.md` the agent takes **any number
+of extra files of any kind**, read as evidence for its own open questions:
+
+- an earlier report of this intent, annotated **between the lines** with the answer to each question
+  (HTML comment, blockquote, or a comment inside the finding block);
+- a filled answer sheet: `.csv` with `finding_id,answer,author,date` (aliases accepted), or the
+  headerless `id,answer` form - `report.csv` is the opposite case: data with no answers in it;
+- an example of the report the author wants back, so the shape and the wording match;
+- notes from the team, a transcript, a link list - anything that carries an answer.
+
+Two places need no flag: `report.csv` at the root (additional technical data, read as context for the
+questions, never as answers) and `reviews/<report>_answers.md` - a copy of an earlier report with the
+answers written between the lines, which is where an author naturally leaves them. Anything else, drop
+it anywhere and name it in the prompt:
+
+```
+Review intent.md using report.csv and the annotated reviews/intent-2026-11-15.findings-Iteration_1_answers.md as evidence
+```
+
+The agent runs `intent-inputs.py`, which turns the pile into a manifest: each file with its type, hash,
+line count and what it settled; every answer matched to a finding ID with its author and date;
+conflicting answers, comments tied to no question, and lines that look like instructions listed
+separately. `--with-previous` also picks up the newest plain report in `reviews/`, the baseline the delta
+compares against. Anything unrecognizable is refused by name (`answer-key`, `binary`, `duplicate`)
+and listed in the report, so you know it was seen and not read.
+
+What the evidence can and cannot do:
+
+| Can | Cannot |
+| --- | --- |
+| answer a question the review opened (`confirmed`, `not a defect`, `still open`) | turn an unchanged `intent.md` into a reviewable state |
+| narrow a finding to a concrete fix the author must write | close a finding without a signed, dated answer |
+| show that two people answered the same question differently | become the document's text, or edit any file |
+| be quoted in the **answer register**, with file and line | be quoted as if it were a line of the intent |
+
+Every answer lands in an **answer register** in the report (`ID | Question | Answer used | Source |
+Effect`) and the verifier checks it: each row cites a file that was really given to the run and a line
+that exists in it, and each prior finding appears exactly once. A finding that a signed answer settles
+either survives with the fix spelled out (`confirmed`) or disappears into the register (`not a
+defect`) - it is never quietly dropped. If nobody answers, the question stays `still open` and the
+finding stands.
+
+`RUBRIC_*.md` is refused: it is the evaluator's answer key and the agent must reach its own verdict.
 
 Optional, if you want the run to concentrate on one thing:
 
@@ -151,6 +203,30 @@ gave>` with `State: NEW`. It is for a deliberate second report (checklist change
 re-confirmation on record) - not a way to turn a `FAIL` into a `PASS`, and not something the agent
 decides by itself. A missing or empty `spec.md` stays a Blocking `MISSING`.
 
+#### Handing the spec agent more than one file
+
+The spec review takes the same evidence the intent review takes - any number of files, read as context
+for its own open questions:
+
+- an earlier report of this spec, annotated **between the lines** with the answer to each question;
+- `report.csv` with additional technical data: volumes, rates, counts, error codes;
+- **screenshots and mock-ups** of the screen under discussion, which the agent names in the report and
+  describes only if it actually saw them - an image has no lines, so it is never quoted and never cited
+  as the source of an answer, and the acceptance criterion still has to be written in the spec;
+- notes from the team, a support transcript, a link list.
+
+Two places need no flag, exactly as in the intent kit: `report.csv` at the root and
+`reviews/<report>_answers.md`. Anything else is named in the prompt:
+
+```
+Review spec.md using report.csv, screen.png and the annotated reviews/spec-2026-11-15.issues-Iteration_1_answers.md as evidence
+```
+
+The agent runs `spec-inputs.py` (same manifest, same answer parsing, `SPEC-nn` ids), writes section 2
+`Inputs reviewed` and section 6 `Answer register` in the report, and passes every file to
+`verify-report.py --input`: the run fails if a file it was given is never named, if a register row
+cites a file that was not given or a line that does not exist, or if a register row cites a screenshot.
+
 If an agent does not appear in the dropdown: check that the file is under `.github/agents/`, that
 `user-invocable` is not `false`, and use **Chat: Open Customizations -> Diagnostics** to see load errors.
 
@@ -201,8 +277,16 @@ run and the missing/empty cases of both kits - and gates every report it writes:
 
 ```bash
 python3 .github/skills/intent-findings-report/scripts/selftest-iteration.py         # exit 0
+python3 .github/skills/intent-findings-report/scripts/selftest-inputs.py            # exit 0
 python3 .github/skills/spec-findings-report/scripts/selftest-spec-iteration.py      # exit 0
 ```
+
+`selftest-inputs.py` covers the evidence path: which file is read as what, answers attached to the
+right finding, signed answers recognised (including an author who signs at the end of their own
+sentence), unsigned ones kept out of the verdict, conflicts, orphans, injections, duplicates, refused
+files, the manifest after the resolver has already archived `intent.md`, and every check the verifier
+adds for the answer register - a row citing a file the run never received, a line beyond the end of
+that file, an invented effect, an unknown finding ID.
 
 ## What a run produces
 
@@ -211,7 +295,7 @@ python3 .github/skills/spec-findings-report/scripts/selftest-spec-iteration.py  
 | File | `reviews/intent-YYYY-MM-DD.findings-Iteration_<n>.md` | `reviews/spec-YYYY-MM-DD.issues-Iteration_<n>.md` |
 | Verdict | FAIL / CONDITIONAL / PASS + counts | same |
 | Blocks | `B01..B12` verdict table | `SP01..SP14` verdict table |
-| Findings | `INT-01..` in document order | `SPEC-01..` in requirement order |
+| Findings | `INT-01..` in document order, stable across iterations | `SPEC-01..` in requirement order |
 | Probe | Q1-Q4 matrix, one row per assertable statement | testability inventory, one row per assertion |
 | Extra | reference table, delta | assertion inventory, traceability `REQ→FR→AC→TC`, contradictions table, reference table, delta |
 
@@ -222,6 +306,14 @@ add, the question to the author, and who closes it by when.
 
 The mutation field is what makes the report a QA artifact instead of a list of complaints: it names the
 wrong implementation that would still pass the test suite.
+
+A finding keeps the number it was opened with for the life of the document. Iteration 1 is contiguous
+from `INT-01`; iteration 2 starts at the next free number and leaves a gap where a finding was closed,
+so a report can hold `INT-02` and `INT-05` and nothing else. Renumbering would break the delta ("what
+happened to INT-03?") and let a closed question come back under a new name. The verifier enforces the
+rule: contiguous on iteration 1, unique and ascending afterwards, and every ID cited anywhere in the
+report must be a finding of this iteration, an ID in the answer register, or an ID the delta declares
+closed.
 
 ## Why the blocks live in a skill and not in the agent
 

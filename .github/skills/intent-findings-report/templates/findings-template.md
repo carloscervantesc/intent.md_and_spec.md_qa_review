@@ -13,6 +13,9 @@
 **Forced:** {{no | yes - <the reason the user gave>}}   <!-- "yes" only when intent-iteration.py
      returned "forced": true because it ran with --force; a forced report re-reviews an unchanged
      file and still says State: NEW, because the file really was archived as iteration n. -->
+**Inputs:** {{none | reviews/<report>_answers.md (annotated report), report.csv (technical data), ...}}   <!-- the evidence files
+     read for this run, straight from intent-inputs.py: none when the review ran on the document
+     alone. Every file named here appears in section 2. -->
 
 ---
 
@@ -23,7 +26,20 @@
 {{One paragraph: what blocks the start of implementation and test design, and what the author must
 answer to unblock it. No praise, no restating the document.}}
 
-## 2. Score
+## 2. Inputs reviewed
+
+<!-- One row per file handed to the review, from the intent-inputs.py JSON. Type and hash are copied
+     from the JSON, never typed from memory. Refused files (answer-key, binary, duplicate) are listed
+     with the reason, so the author knows they were seen and not used. No evidence at all:
+     write "none - the review ran on the document alone" and keep no table. -->
+
+| File | Type | Lines | sha256 | What it settled |
+|---|---|---|---|---|
+| {{reviews/intent-2026-11-15.findings-Iteration_1_answers.md}} | {{annotated-review}} | {{120}} | {{a1b2c3d4e5f6}} | {{answered INT-07 (retention)}} |
+| {{report.csv}} | {{data}} | {{41}} | {{0f1e2d3c4b5a}} | {{no answers; INT-04 volume confirmed at 1,200 rows/day}} |
+| {{RUBRIC_intent_example.md}} | {{answer-key - refused}} | {{40}} | {{...}} | {{not read: it holds the expected answers}} |
+
+## 3. Score
 
 | Metric | Value |
 |---|---|
@@ -34,8 +50,9 @@ answer to unblock it. No praise, no restating the document.}}
 | Criteria testable | {{0}} / {{0}} |
 | Blocks PASS / FAIL / N/A | {{0}} / {{0}} / {{0}} |
 | References verified | {{0}} found, {{0}} missing |
+| Questions answered by evidence | {{0}} / {{0}} |
 
-## 3. Block coverage
+## 4. Block coverage
 
 | Block | Name | Result | Evidence |
 |---|---|---|---|
@@ -52,11 +69,12 @@ answer to unblock it. No praise, no restating the document.}}
 | B11 | Open questions closed | | |
 | B12 | Metadata, ownership, approval, IDs | | |
 
-## 4. Findings
+## 5. Findings
 
 <!-- One block per finding, document order, INT-01..INT-nn. Fields: Severity, Block, Location,
      Document says, Problem, Why it blocks QA, Surviving mutation, Question to the author,
-     Suggested default. -->
+     Suggested default - plus "Answer:" as ONE line when an evidence file changed this finding's
+     fate. A finding withdrawn by a signed answer keeps no heading at all: it lives in section 6. -->
 
 ### INT-01 - {{short title}}
 
@@ -69,23 +87,40 @@ answer to unblock it. No praise, no restating the document.}}
 - **Surviving mutation:**
 - **Question to the author:**
 - **Suggested default:**
+- **Answer:** {{what was said}} - {{file}} (l.{{n}}) - {{author, date}}
 
-## 5. Testability matrix
+## 6. Answer register
+
+<!-- One row per question the checklist (B11) or the probe opened, including the ones nobody
+     answered. Effect is exactly: confirmed | not a defect | still open | n/a.
+     Source is "file (l.N)" for a real answer; "-" is only valid for still open, because a question
+     without an answer has no source. IDs are stable: a finding keeps the number it was opened with,
+     so a later iteration leaves gaps where findings were closed, and an answer filed under a
+     different number is written "INT-07 (the answer was filed as INT-03)".
+     No evidence supplied: write "none - no evidence files were supplied" and keep no table. -->
+
+| ID | Question | Answer used | Source | Effect |
+|---|---|---|---|---|
+| {{INT-07}} | {{which retention governs `charge_attempts`?}} | {{30 days, §9 is the compliance source}} | {{intent-2026-11-15.findings-Iteration_1.md (l.42)}} | {{confirmed}} |
+| {{INT-09}} | {{who may export?}} | {{-}} | {{-}} | {{still open}} |
+
+## 7. Testability matrix
 
 | Criterion | Q1 who observes | Q2 exact data | Q3 correct vs incorrect | Q4 surviving mutation | Verdict |
 |---|---|---|---|---|---|
 | {{§n ID}} | | | | | {{TESTABLE / TESTABLE WITH DATA / NOT TESTABLE}} |
 
-## 6. What this review could not verify
+## 8. What this review could not verify
 
 | Reference | Exists | Where / note |
 |---|---|---|
 | {{path / endpoint / role / table}} | {{yes / no / document-internal / undefined}} | {{where it was found, or why it is missing}} |
 
-{{Plus: systems not reachable from here, sections unreadable or truncated, and the items that are
-legitimately not part of an intent (stack, tooling, date formats) when a test depends on them.}}
+{{Plus: systems not reachable from here, sections unreadable or truncated, evidence files that were
+refused and why, and the items that are legitimately not part of an intent (stack, tooling, date
+formats) when a test depends on them.}}
 
-## 7. Delta versus iteration {{n-1}}
+## 9. Delta versus iteration {{n-1}}
 
 <!-- Only when n > 1: closed / new / unchanged, by ID and title, read against
      reviews/intent-*.findings-Iteration_{{n-1}}.md
@@ -98,13 +133,15 @@ legitimately not part of an intent (stack, tooling, date formats) when a test de
 
 <!-- Use this INSTEAD of everything above when scripts/intent-iteration.py returned
      state UNCHANGED or MISSING (review: false). Same file name and header, nothing else:
-     no block table, no testability matrix, no delta. -->
+     no block table, no testability matrix, no delta. Evidence files supplied for a file that did
+     not change are listed in one line - they answer questions, they do not lift the gate. -->
 
 **Source:** `intent.md` (workspace root)
 **Review run:** {{YYYY-MM-DD HH:MM TZ}}
 **Reviewer:** `intent_md_reviewer`
 **Iteration:** {{last + 1}}
 **State:** {{MISSING | UNCHANGED}}
+**Inputs:** {{none | <file> (annotated report) - answers recorded, but the document did not change}}
 
 ## 1. Verdict
 
@@ -128,5 +165,9 @@ frozen until `intent.md` exists and differs from the last archived iteration.
 - **Question to the author:** {{What changed in iteration <last+1>, and where is it? | Please create
   `intent.md` at the workspace root with the intent you want reviewed.}}
 - **Close by:** {{owner}}, {{YYYY-MM-DD}}
+
+{{When evidence arrived, one line with what it answered and why it does not change this report:
+"INT-07 and INT-09 were answered in reviews/intent-...-Iteration_1.md (l.42, l.51); carrying those
+answers into the intent still requires a new intent.md."}}
 
 **If nobody decides** no implementation, no test design, and no plan starts from this iteration.

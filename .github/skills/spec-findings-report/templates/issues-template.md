@@ -27,6 +27,9 @@
      iteration <n>, so the report keeps State: NEW. -->
 **Reviewer:** spec_md_reviewer
 **Scope:** <what was reviewed: sections read, references checked, what was out of reach>
+**Inputs:** {{none | reviews/<report>_answers.md (annotated report), report.csv (technical data), screen.png (screenshot), ...}}   <!-- the evidence files
+     read for this run, straight from spec-inputs.py: none when the review ran on the document alone.
+     Every file named here appears in section 2, and every file you were given appears here. -->
 
 ---
 
@@ -38,7 +41,22 @@
 
 ---
 
-## 2. Score
+## 2. Inputs reviewed
+
+<!-- One row per file handed to the review, from the spec-inputs.py JSON. Type and hash are copied
+     from the JSON, never typed from memory. Refused files (answer-key, binary, duplicate) are listed
+     with the reason, so the author knows they were seen and not used. A screenshot has 0 lines: it is
+     named here, described only if the reviewer saw it, and never cited as the source of an answer.
+     No evidence at all: write "none - the review ran on the document alone" and keep no table. -->
+
+| File | Type | Lines | sha256 | What it settled |
+|---|---|---|---|---|
+| {{reviews/spec-2026-11-15.issues-Iteration_1_answers.md}} | {{annotated-review}} | {{120}} | {{a1b2c3d4e5f6}} | {{answered SPEC-07 (retention)}} |
+| {{report.csv}} | {{data}} | {{41}} | {{0f1e2d3c4b5a}} | {{no answers; SPEC-04 volume confirmed at 1,200 rows/day}} |
+| {{screen.png}} | {{image}} | {{0}} | {{9c1f...}} | {{no answer; the export screen as built, seen in the conversation}} |
+| {{RUBRIC_spec_example.md}} | {{answer-key - refused}} | {{40}} | {{...}} | {{not read: it holds the expected answers}} |
+
+## 3. Score
 
 | Metric | Value |
 |---|---|
@@ -52,7 +70,7 @@
 
 ---
 
-## 3. Block coverage
+## 4. Block coverage
 
 | Block | Verdict | Evidence | Findings |
 |---|---|---|---|
@@ -62,7 +80,7 @@
 
 ---
 
-## 4. Findings
+## 5. Findings
 
 ### SPEC-01 - <defect stated as a claim>
 **Severity:** Blocking · **Block:** SP<nn> · **Location:** §<n> (l.<a>-<b>), §<n>
@@ -120,7 +138,24 @@ assumption in §<assumptions> with the owner below.
 
 ---
 
-## 5. Assertion inventory (one row per assertable statement)
+## 6. Answer register
+
+<!-- One row per question the checklist (SP01..SP14) or the probe opened, including the ones nobody
+     answered. Effect is exactly: confirmed | not a defect | still open | n/a.
+     Source is "file (l.N)" for a real answer and the file must have been passed with --input;
+     "-" is only valid for still open, because a question without an answer has no source.
+     A screenshot is never a source: it has no lines.
+     IDs are stable: a finding keeps the number it was opened with, so a later iteration leaves gaps
+     where findings were closed, and an answer filed under a different number is written
+     "SPEC-07 (the answer was filed as SPEC-03)".
+     No evidence supplied: write "none - no evidence files were supplied" and keep no table. -->
+
+| ID | Question | Answer used | Source | Effect |
+|---|---|---|---|---|
+| {{SPEC-07}} | {{which retention governs `charge_attempts`?}} | {{30 days, §9 is the compliance source}} | {{spec-2026-11-15.issues-Iteration_1_answers.md (l.42)}} | {{confirmed}} |
+| {{SPEC-09}} | {{who may export?}} | {{-}} | {{-}} | {{still open}} |
+
+## 7. Assertion inventory (one row per assertable statement)
 
 `<n>` assertions probed. `Verdict` uses the vocabulary of `spec-testability-probe`; `TC` ids follow
 `TC-SPEC-<FR>-<n>`. The last column says what the document would have to add - so a reader sees at a
@@ -143,7 +178,7 @@ fully testable end to end, because each one contains at least one `NOT TESTABLE`
 
 ---
 
-## 6. Traceability summary
+## 8. Traceability summary
 
 | Intent req | FR | ACs | TCs derivable | Data / stub / clock | State |
 |---|---|---|---|---|---|
@@ -162,7 +197,7 @@ Full matrix: `reviews/<spec-name>-traceability.md`.
 
 ---
 
-## 7. What this review could not verify
+## 9. What this review could not verify
 
 | Reference | Present in supplied workspace | What to ask for |
 |---|---|---|
@@ -171,7 +206,7 @@ Full matrix: `reviews/<spec-name>-traceability.md`.
 
 ---
 
-## 8. Minimum set to reach PASS
+## 10. Minimum set to reach PASS
 
 1. <addition> - closes SPEC-01, SPEC-04.
 2. <addition> - closes SPEC-02.
@@ -181,7 +216,7 @@ Until these exist, the verdict stays `FAIL`.
 
 ---
 
-## 9. Delta versus iteration <N-1>
+## 11. Delta versus iteration <N-1>
 
 `Closed: <n>` · `Still open: <n>` · `New: <n>`
 
